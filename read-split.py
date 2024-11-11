@@ -17,7 +17,7 @@ def extract_data_blocks(file_path):
 
     for line in data:
         line = line.strip()
-        if line.startswith("Properties"):
+        if line.startswith("energy"):
             # 提取 energy 值
             energy = float(line.split("energy=")[1].split()[0])
         elif any(line.startswith(element) for element in elements):  # 判断是否以元素符号开头
