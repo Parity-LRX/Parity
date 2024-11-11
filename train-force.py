@@ -42,11 +42,11 @@ class EmbedNet(nn.Module):
         self.encoder_layers = nn.ModuleList([TransformerEncoderLayer(embed_size, num_heads, dropout_rate) for _ in range(num_layers)])
     def forward(self, R):
         # 嵌入输入并应用位置编码
-        x = self.embedding(R)  # 输入形状：[batch_size, sequence_length, input_size] -> [batch_size, sequence_length, embed_size]
+        x = self.embedding(R)  # 输入形状：[dimensions_length, input_size] -> [dimensions_length, embed_size]
         x = self.positional_encoding(x)  # 添加位置编码
         # 逐层应用 Transformer Encoder 层
         for layer in self.encoder_layers:
-            x = layer(x)  # 输出形状：[batch_size, sequence_length, embed_size]
+            x = layer(x)  # 输出形状：[dimensions_length, embed_size]
         return x
 class PositionalEncoding(nn.Module):
     def __init__(self, embed_size, dropout_rate=0.0, max_len=5000):
@@ -61,13 +61,13 @@ class PositionalEncoding(nn.Module):
         pe = pe.unsqueeze(0)  # 形状为 [1, max_len, embed_size]
         self.register_buffer('pe', pe)
     def forward(self, x):
-        x = x + self.pe[:, :x.size(1), :]  # 添加位置编码到输入中
+        x = x + self.pe[0, :x.size(0), :]  # 添加位置编码到输入中
         return self.dropout(x)
 class TransformerEncoderLayer(nn.Module):
     def __init__(self, embed_size, num_heads, dropout_rate=0.0):
         super(TransformerEncoderLayer, self).__init__()
         # 多头自注意力机制
-        self.self_attn = nn.MultiheadAttention(embed_dim=embed_size, num_heads=num_heads, dropout=dropout_rate, batch_first=True)
+        self.self_attn = nn.MultiheadAttention(embed_dim=embed_size, num_heads=num_heads, dropout=dropout_rate, batch_first=False)
         # 前馈网络
         self.feed_forward = nn.Sequential(
             nn.Linear(embed_size, embed_size * 4),  # 扩展4倍用于激活后再压缩
@@ -81,6 +81,7 @@ class TransformerEncoderLayer(nn.Module):
         # Dropout
         self.dropout1 = nn.Dropout(dropout_rate)
         self.dropout2 = nn.Dropout(dropout_rate)
+
     def forward(self, x):
         # 1. 自注意力层
         attn_output, _ = self.self_attn(x, x, x)  # Self-attention
@@ -91,7 +92,6 @@ class TransformerEncoderLayer(nn.Module):
         x = x + self.dropout2(ff_output)  # 残差连接
         x = self.norm2(x)  # 层归一化
         return x
-    
 # 定义主神经网络
 class MainNet(nn.Module):
     def __init__(self, input_size, hidden_sizes, dropout_rate=0):
@@ -120,7 +120,6 @@ class MainNet2(nn.Module):
             self.layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
         self.output = nn.Linear(hidden_sizes[-1], 1)
         self.dropout = nn.Dropout(dropout_rate)
-
     def forward(self, M):
         x = M
         for layer in self.layers:
@@ -128,7 +127,6 @@ class MainNet2(nn.Module):
             x = self.dropout(x)
         Y = self.output(x)
         return Y
-
 class CustomDataset(Dataset):
     def __init__(self, input_file_path, read_file_path, energy_file_path):
         self.input_data = pd.read_hdf(input_file_path)
@@ -210,18 +208,20 @@ def compute_R_R_T(R, cache=True):#用以构造可对广义坐标求导的对称�
     if cached_R_R_T is not None and cache:
         return cached_R_R_T
     R_R_T = torch.mm(R, R.T)
+    #print(R_R_T.shape)
+    R_R_T = R_R_T.view(-1, R_R_T.shape[-1])
     if cache:
         cached_R_R_T = R_R_T  # 缓存 R_R_T
     return R_R_T
-# 定义计算 G 矩阵的函数
-def compute_G(embed_net, R):
+# 定义计算 T 矩阵的函数
+def compute_T(embed_net, R):
     input_tensor = R[:, [0, 4, 5]].to(device)  # 选择R第2、6、7列,如果读取其他列，记得修改embednet的input_size参数
     embed_output = embed_net(input_tensor)
-    #print(f"Number of elements in G: {embed_output.numel()}")#可以用来确认G里面的元素数量是否合理
+    #print(f"Number of elements in T: {embed_output.numel()}")#可以用来确认G里面的元素数量是否合理
     return embed_output.requires_grad_()
 # 定义计算 M 矩阵的函数
-def compute_M(G, R_R_T):
-    return torch.mm(G.T, torch.mm(R_R_T, G)).requires_grad_()
+def compute_M(T, R_R_T):
+    return torch.mm(T.T, torch.mm(R_R_T, T)).requires_grad_()
 def compute_E(R, embed_value):
     # 原子序号对应network
     embed_net = {
@@ -237,10 +237,12 @@ def compute_E(R, embed_value):
         6: main_net2,
         7: main_net3,
         8: main_net4} .get(embed_value, main_net0)
-    G = compute_G(embed_net, R)
-    M = compute_M(G, torch.mm(R, R.T))
+    T = compute_T(embed_net, R)
+    #print(G.shape)
+    M = compute_M(T, torch.mm(R, R.T))
     E = main_net(M.view(1, -1))
     return E
+
 # 初始化嵌入网络和两个主网络
 embed_net1 = EmbedNet(input_size=3, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=0).to(device)
 embed_net2 = EmbedNet(input_size=3, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=0).to(device)
@@ -341,7 +343,7 @@ for epoch in range(1, epoch_numbers + 1):
 
         E_sum = E_sum + E.sum()
         energy_loss = criterion(E_sum, target_energy)
-        total_energy_loss += energy_loss.item() / batch_size
+        total_energy_loss += energy_loss.item() / len(dimensions)
 
         fx_pred_all = torch.tensor(fx_pred_all, device=device).view(-1)
         fy_pred_all = torch.tensor(fy_pred_all, device=device).view(-1)
@@ -354,7 +356,7 @@ for epoch in range(1, epoch_numbers + 1):
             criterion(fy_pred_all, fy_ref) +
             criterion(fz_pred_all, fz_ref))
 
-        total_force_loss += force_loss.item() / batch_size
+        total_force_loss += force_loss.item()
         # 计算总损失
         total_loss = energy_loss + force_loss
         optimizer1.zero_grad()
@@ -409,7 +411,7 @@ for epoch in range(1, epoch_numbers + 1):
                 fy_pred_all_val.append(fy_pred_sum_val)
                 fz_pred_all_val.append(fz_pred_sum_val)
             E_sum_val = E_sum_val + E_val.sum() 
-            energy_loss_val = criterion(E_sum_val, target_E_val)
+            energy_loss_val = criterion(E_sum_val, target_E_val) / len(dimensions)
             total_energy_loss_val += energy_loss_val.item() / batch_size
             fx_pred_all_val = torch.tensor(fx_pred_all_val, device=device).view(-1)
             fy_pred_all_val = torch.tensor(fy_pred_all_val, device=device).view(-1)
@@ -421,7 +423,7 @@ for epoch in range(1, epoch_numbers + 1):
                 criterion(fx_pred_all_val, fx_ref_val) +
                 criterion(fy_pred_all_val, fy_ref_val) +
                 criterion(fz_pred_all_val, fz_ref_val))
-            total_force_loss_val += force_loss.item() / batch_size
+            total_force_loss_val += force_loss.item()
             avg_val_loss1 = total_energy_loss_val + total_force_loss_val
     # 早停机制
     if avg_val_loss1 < best_val_loss:
