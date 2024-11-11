@@ -28,7 +28,6 @@ batch_size = 128
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 scaler = MinMaxScaler(feature_range=(0, 1))
-#max_atom = 42 #如果要用虚原子，则开启并设置max_atom
 
 # 定义Transformer嵌入网络
 class EmbedNet(nn.Module):
@@ -286,7 +285,6 @@ scaler = GradScaler()
 best_val_loss = float('inf')
 patience_counter = 0
 writer = SummaryWriter(log_dir='runs/transformer')
-#dimensions = torch.arange(0, max_atom, dtype=torch.float32)
 # 开始训练
 for epoch in range(1, epoch_numbers + 1):
     start_time = time.time()
