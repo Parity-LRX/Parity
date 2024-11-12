@@ -9,29 +9,35 @@ import time
 import os
 from sklearn.preprocessing import MinMaxScaler
 from torch.amp import autocast, GradScaler
+from torch.optim.lr_scheduler import StepLR
 from torch.utils.tensorboard import SummaryWriter
-
-# 训练模型参数
 torch.autograd.set_detect_anomaly(True)
 torch.amp.autocast(device_type='cuda', enabled=True)
+# 训练模型参数
 epoch_numbers = 100
-learning_rate = 0.01
+learning_rate = 0.001
 embed_size = 32
 num_heads = 8  # 多头注意力头数
 num_layers = 4  # Transformer层数
-main_hidden_sizes1 = [100,100]
+main_hidden_sizes1 = [100,100,100]
 main_hidden_sizes2 = [1,1]
-patience_opim = 3
+input_size_value = 2
+patience_opim = 80
 patience = 5  # 早停参数
+dropout_value = 0.3
+#定义一个映射，E_trans = E/energy_shift_value + energy_shift_value2
+energy_shift_value = 1
+energy_shift_value2 = 0
 criterion = nn.SmoothL1Loss()
-batch_size = 128
+batch_size = 40
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 scaler = MinMaxScaler(feature_range=(0, 1))
+#max_atom = 42 #如果要用虚原子，则开启并设置max_atom
 
 # 定义Transformer嵌入网络
 class EmbedNet(nn.Module):
-    def __init__(self, input_size, embed_size, num_heads, num_layers, dropout_rate=0.0):
+    def __init__(self, input_size, embed_size, num_heads, num_layers, dropout_rate=dropout_value):
         super(EmbedNet, self).__init__()
         # 输入嵌入层
         self.embedding = nn.Linear(input_size, embed_size)
@@ -48,7 +54,7 @@ class EmbedNet(nn.Module):
             x = layer(x)  # 输出形状：[dimensions_length, embed_size]
         return x
 class PositionalEncoding(nn.Module):
-    def __init__(self, embed_size, dropout_rate=0.0, max_len=5000):
+    def __init__(self, embed_size, dropout_rate=dropout_value, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout_rate)
         # 创建位置编码矩阵
@@ -63,7 +69,7 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[0, :x.size(0), :]  # 添加位置编码到输入中
         return self.dropout(x)
 class TransformerEncoderLayer(nn.Module):
-    def __init__(self, embed_size, num_heads, dropout_rate=0.0):
+    def __init__(self, embed_size, num_heads, dropout_rate=dropout_value):
         super(TransformerEncoderLayer, self).__init__()
         # 多头自注意力机制
         self.self_attn = nn.MultiheadAttention(embed_dim=embed_size, num_heads=num_heads, dropout=dropout_rate, batch_first=False)
@@ -93,7 +99,7 @@ class TransformerEncoderLayer(nn.Module):
         return x
 # 定义主神经网络
 class MainNet(nn.Module):
-    def __init__(self, input_size, hidden_sizes, dropout_rate=0):
+    def __init__(self, input_size, hidden_sizes, dropout_rate=dropout_value):
         super(MainNet, self).__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Linear(input_size, hidden_sizes[0]))
@@ -111,7 +117,7 @@ class MainNet(nn.Module):
         return Y
 #backup
 class MainNet2(nn.Module):
-    def __init__(self, input_size, hidden_sizes, dropout_rate=0):
+    def __init__(self, input_size, hidden_sizes, dropout_rate=dropout_value):
         super(MainNet2, self).__init__()
         self.layers = nn.ModuleList()
         self.layers.append(nn.Linear(input_size, hidden_sizes[0]))
@@ -131,8 +137,8 @@ class CustomDataset(Dataset):
         self.input_data = pd.read_hdf(input_file_path)
         self.read_data = pd.read_hdf(read_file_path)
         self.energy_df = pd.read_hdf(energy_file_path)
-        self.energy_shift = 1000  # 能量变换的偏移量
-        self.energy_df['Transformed_Energy'] = self.energy_df['Energy'] / self.energy_shift  # 对能量进行变换，数据放缩到合适的大小
+        self.energy_shift = energy_shift_value  # 能量变换的偏移量
+        self.energy_df['Transformed_Energy'] = ((self.energy_df['Energy'] / self.energy_shift)+energy_shift_value2)  # 对能量进行变换，数据放缩到合适的大小
         # 创建数据块
         self.input_data_blocks = self._create_data_blocks(self.input_data)
         self.read_data_blocks = self._create_data_blocks(self.read_data)
@@ -164,7 +170,7 @@ class CustomDataset(Dataset):
             return None, None  # 处理空块
         input_tensor = torch.tensor(input_block.values, dtype=torch.float32, device=device)
         read_tensor = torch.tensor(read_block.values, dtype=torch.float32, device=device)
-        print(f"read_tensor shape: {read_tensor.shape}")
+        #print(f"read_tensor shape: {read_tensor.shape}")
         # 获取目标能量
         target_energy = torch.tensor(self.energy_df['Transformed_Energy'].iloc[idx], dtype=torch.float32, device=device)
         return input_tensor, read_tensor, target_energy
@@ -214,9 +220,10 @@ def compute_R_R_T(R, cache=True):#用以构造可对广义坐标求导的对称�
     return R_R_T
 # 定义计算 T 矩阵的函数
 def compute_T(embed_net, R):
-    input_tensor = R[:, [0, 4, 5]].to(device)  # 选择R第2、6、7列,如果读取其他列，记得修改embednet的input_size参数
+    input_tensor = R[:, [0, 5]].to(device)  # 选择train.h5第2、6、7列,如果读取其他列，记得修改input_size_value参数
     embed_output = embed_net(input_tensor)
     #print(f"Number of elements in T: {embed_output.numel()}")#可以用来确认G里面的元素数量是否合理
+    #print(input_tensor)
     return embed_output.requires_grad_()
 # 定义计算 M 矩阵的函数
 def compute_M(T, R_R_T):
@@ -228,8 +235,7 @@ def compute_E(R, embed_value):
         1: embed_net1,
         6: embed_net2,
         7: embed_net3,
-        8: embed_net4
-    }.get(embed_value, embed_net0)
+        8: embed_net4}.get(embed_value, embed_net0)
     main_net = {
         0: main_net0,
         1: main_net1,
@@ -237,29 +243,27 @@ def compute_E(R, embed_value):
         7: main_net3,
         8: main_net4} .get(embed_value, main_net0)
     T = compute_T(embed_net, R)
-    #print(G.shape)
     M = compute_M(T, torch.mm(R, R.T))
     E = main_net(M.view(1, -1))
     return E
 
 # 初始化嵌入网络和两个主网络
-embed_net1 = EmbedNet(input_size=3, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=0).to(device)
-embed_net2 = EmbedNet(input_size=3, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=0).to(device)
-embed_net3 = EmbedNet(input_size=3, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=0).to(device)
-embed_net4 = EmbedNet(input_size=3, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=0).to(device)
-embed_net0 = EmbedNet(input_size=3, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=0).to(device)
-main_net1 = MainNet(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes1, dropout_rate=0).to(device)#给虚原子的embednet
-main_net2 = MainNet(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes1, dropout_rate=0).to(device)
-main_net3 = MainNet(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes1, dropout_rate=0).to(device)
-main_net4 = MainNet(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes1, dropout_rate=0).to(device)
-main_net0 = MainNet2(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes2, dropout_rate=0).to(device)#给虚原子的mainnet
-
+embed_net1 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
+embed_net2 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
+embed_net3 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
+embed_net4 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
+embed_net0 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
+main_net1 = MainNet(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)#给虚原子的embednet
+main_net2 = MainNet(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
+main_net3 = MainNet(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
+main_net4 = MainNet(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
+main_net0 = MainNet2(input_size=embed_size * embed_size, hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)#给虚原子的mainnet
 
 optimizer1 = torch.optim.Adam(
-    list(embed_net1.parameters()) + list(embed_net2.parameters()) + list(embed_net3.parameters()) + list(embed_net4.parameters()) + 
-    list(main_net1.parameters()) + list(main_net2.parameters()),
+    list(embed_net1.parameters()) + list(embed_net2.parameters()) + list(embed_net3.parameters()) + list(embed_net4.parameters()) + list(embed_net0.parameters()) +
+    list(main_net1.parameters()) + list(main_net2.parameters()) + list(main_net3.parameters()) + list(main_net4.parameters()) + list(main_net0.parameters()),
     lr=learning_rate)
-scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, factor=0.1, patience=patience_opim)
+scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, mode='min', factor=0.1, patience=patience_opim, verbose=True)
 # 检查是否存在之前保存的模型文件
 checkpoint_path = 'combined_model.pth'
 if os.path.exists(checkpoint_path):
@@ -274,7 +278,7 @@ if os.path.exists(checkpoint_path):
     main_net3.load_state_dict(checkpoint['main_net3_state_dict'])
     main_net4.load_state_dict(checkpoint['main_net4_state_dict'])
     main_net0.load_state_dict(checkpoint['main_net0_state_dict'])
-    optimizer1.load_state_dict(checkpoint['optimizer1_state_dict'])
+    #optimizer1.load_state_dict(checkpoint['optimizer1_state_dict'])
     print("Loaded model from checkpoint.")
 else:
     print("No checkpoint found. Starting training from scratch.")
@@ -288,16 +292,15 @@ writer = SummaryWriter(log_dir='runs/transformer')
 # 开始训练
 for epoch in range(1, epoch_numbers + 1):
     start_time = time.time()
-    total_energy_loss = 0.0
-    total_force_loss = 0.0
-    total_loss = 0.0  # 总损失（能量损失 + 力损失）
-
-    for input_tensor, read_tensor, target_energy in train_blocks:  # 使用预加载的输入数据
+    for block_idx, (input_tensor, read_tensor, target_energy) in enumerate(train_blocks):
         if input_tensor is None or read_tensor is None or target_energy is None:
             continue  # 跳过空块
-        
-        input_tensor = input_tensor.to(device)
-        read_tensor = read_tensor.to(device).requires_grad_(True)
+        start_time_iter = time.time()
+        total_energy_loss = 0.0
+        total_force_loss = 0.0
+        total_loss = 0.0  # 总损失（能量损失 + 力损失）
+        optimizer1.zero_grad()
+        #read_tensor = read_tensor.to(device).requires_grad_(True)
         target_energy = target_energy.view(1).to(device)
         # 计算每个block的总能量 E_sum
         E_sum = torch.zeros(1, dtype=torch.float32, device=device, requires_grad=True)
@@ -315,21 +318,25 @@ for epoch in range(1, epoch_numbers + 1):
         for dim in dimensions:
             mask = input_tensor[:, 0] == dim  # 第一列是维度列，选择当前维度的行
             filtered_block = input_tensor[mask]  # 获取该维度的数据
-            embed_value = filtered_block[0, 4].item()  # 假设第一行的某列代表嵌入值
+            embed_value = filtered_block[0, 5].item()
+            #print(embed_value)
+            # 假设第一行的某列代表嵌入值
             R = compute_R(filtered_block)
             R_R_T = compute_R_R_T(R)
             E = compute_E(R, embed_value)
             E.backward(retain_graph=True)
-            
+            #print(E.item())
+            E_sum = E_sum + E.sum()
             # 计算预测力
-            fx_pred = -R.grad[:, 1]  # 对 x 坐标求导
-            fy_pred = -R.grad[:, 2]  # 对 y 坐标求导
-            fz_pred = -R.grad[:, 3]  # 对 z 坐标求导
+            fx_pred = -R.grad[:, 1] / energy_shift_value   # 对 x 坐标求导
+            fy_pred = -R.grad[:, 2] / energy_shift_value # 对 y 坐标求导
+            fz_pred = -R.grad[:, 3] / energy_shift_value # 对 z 坐标求导
             #print(f"fz_pred:{fz_pred}")
             # 汇总预测的力
             fx_pred_sum = fx_pred.sum()
             fy_pred_sum = fy_pred.sum()
             fz_pred_sum = fz_pred.sum()
+            #print(fz_pred_sum.item())
             # 记录每个原子（dimension）的预测力
             fx_pred_all.append(fx_pred_sum)
             fy_pred_all.append(fy_pred_sum)
@@ -338,11 +345,7 @@ for epoch in range(1, epoch_numbers + 1):
         #print(f"fz_pred_all: {fz_pred_all}")
         #print(f"fz_pred_atom value: {fz_pred_atom.item()}")  # 获取标量值
         #print(f"fz_pred_atom shape before access: {fz_pred_atom.shape}")  # 0维标量张量，shape为空
-
-        E_sum = E_sum + E.sum()
         energy_loss = criterion(E_sum, target_energy)
-        total_energy_loss += energy_loss.item() / len(dimensions)
-
         fx_pred_all = torch.tensor(fx_pred_all, device=device).view(-1)
         fy_pred_all = torch.tensor(fy_pred_all, device=device).view(-1)
         fz_pred_all = torch.tensor(fz_pred_all, device=device).view(-1)
@@ -353,13 +356,18 @@ for epoch in range(1, epoch_numbers + 1):
             criterion(fx_pred_all, fx_ref) +
             criterion(fy_pred_all, fy_ref) +
             criterion(fz_pred_all, fz_ref))
-
-        total_force_loss += force_loss.item()
+        end_time_iter = time.time()  # 记录结束时间
+        iter_time = end_time_iter - start_time_iter  # 计算时间
+        total_energy_loss =total_energy_loss + energy_loss.item()
+        total_force_loss = total_force_loss +force_loss.item()
         # 计算总损失
         total_loss = energy_loss + force_loss
-        optimizer1.zero_grad()
         total_loss.backward()
         optimizer1.step()
+        scheduler1.step(total_loss.item())
+        current_lr1 = scheduler1.get_last_lr()
+        print(f"Training block {block_idx + 1}/{len(train_blocks)}, iter_time:{iter_time:.4f}seconds, E:{(E_sum.item()-energy_shift_value2)*energy_shift_value}, force_loss:{force_loss}, energy_loss:{energy_loss},Current learning rate1: {current_lr1[0]}")
+
     # 验证集评估
     total_energy_loss_val = 0.0
     total_force_loss_val = 0.0
@@ -370,7 +378,9 @@ for epoch in range(1, epoch_numbers + 1):
     embed_net0.eval()
     main_net1.eval()
     main_net2.eval()
-    
+    main_net3.eval()
+    main_net4.eval()
+    main_net0.eval()
     #with torch.no_grad():
     for input_tensor, read_tensor, target_energy in val_blocks:  # 使用预加载的数据
             if input_tensor is None or read_tensor is None or target_energy is None:
@@ -384,21 +394,21 @@ for epoch in range(1, epoch_numbers + 1):
             fx_pred_all_val = []
             fy_pred_all_val = []
             fz_pred_all_val = []
-            fx_ref_val = read_tensor[:, 5]  # x 方向参考力
-            fy_ref_val = read_tensor[:, 6]  # y 方向参考力
-            fz_ref_val = read_tensor[:, 7]  # z 方向参考力
+            fx_ref_val = read_tensor[:, 5]  / energy_shift_value  # x 方向参考力
+            fy_ref_val = read_tensor[:, 6]  / energy_shift_value  # y 方向参考力
+            fz_ref_val = read_tensor[:, 7]  / energy_shift_value  # z 方向参考力
             E_sum_val = torch.zeros(1, dtype=torch.float32, device=device).to(device)
             for dim in dimensions:
                 mask = input_tensor[:, 0] == dim  # 第一列是维度列，选择当前维度的行
                 filtered_block = input_tensor[mask]  # 获取该维度的数据
-                embed_value = filtered_block[0, 4].item()  # 假设第一行的某列代表嵌入值
+                embed_value = filtered_block[0, 5].item()  # 假设第一行的某列代表嵌入值
                 R_val = compute_R(filtered_block)
                 R_val.requires_grad_(True)
                 R_R_T_val = compute_R_R_T(R_val)
                 E_val = compute_E(R_val, embed_value)
                 E_val.requires_grad_(True)
-
-                E_val.backward(retain_graph=True)            
+                E_val.backward(retain_graph=True)  
+                E_sum_val = E_sum_val + E_val.sum()           
                 fx_pred_val = -R_val.grad[:, 1]  # 对 x 坐标求导
                 fy_pred_val = -R_val.grad[:, 2]  # 对 y 坐标求导
                 fz_pred_val = -R_val.grad[:, 3]  # 对 z 坐标求导
@@ -408,7 +418,7 @@ for epoch in range(1, epoch_numbers + 1):
                 fx_pred_all_val.append(fx_pred_sum_val)
                 fy_pred_all_val.append(fy_pred_sum_val)
                 fz_pred_all_val.append(fz_pred_sum_val)
-            E_sum_val = E_sum_val + E_val.sum() 
+
             energy_loss_val = criterion(E_sum_val, target_E_val) / len(dimensions)
             total_energy_loss_val += energy_loss_val.item() / batch_size
             fx_pred_all_val = torch.tensor(fx_pred_all_val, device=device).view(-1)
@@ -439,10 +449,13 @@ for epoch in range(1, epoch_numbers + 1):
     embed_net0.train()
     main_net1.train()
     main_net2.train()
-    scheduler1.step(total_loss)
-    current_lr1 = scheduler1.get_last_lr()
-    end_time = time.time()  # 记录 epoch 结束时间
-    epoch_time = end_time - start_time  # 计算 epoch 时间
+    main_net3.train()
+    main_net4.train()
+    main_net0.train()
+
+    end_time = time.time()
+    epoch_time = end_time - start_time
+
     print(f"""Epoch {epoch}/{epoch_numbers},
         Energy Loss: {total_energy_loss:.6f}, 
         Force Loss: {total_force_loss:.6f}, 
@@ -450,7 +463,7 @@ for epoch in range(1, epoch_numbers + 1):
         Energy Loss_val: {total_energy_loss_val:.6f},
         Force Loss_val: {total_force_loss_val:.6f},
         Current learning rate1: {current_lr1[0]}, 
-        Time: {epoch_time:.4f} seconds""")
+        Epoch_Time: {epoch_time:.4f} seconds""")
     #loss_out.append({'Epoch': epoch, 'Train Total_Loss1': total_loss1,'Train Total_Loss2': total_loss2,'Val Total_Loss1': val_total_loss1, 'Val Total_Loss2': val_total_loss2, 'learning rate1': current_lr1[0], 'learning rate2': current_lr2[0]})
     # 每 n个 epoch 保存一次模型
     if epoch % 1 == 0:
@@ -459,9 +472,12 @@ for epoch in range(1, epoch_numbers + 1):
             'embed_net2_state_dict': embed_net2.state_dict(),
             'embed_net3_state_dict': embed_net3.state_dict(),
             'embed_net4_state_dict': embed_net4.state_dict(),
-            'embed_net5_state_dict': embed_net0.state_dict(),
+            'embed_net0_state_dict': embed_net0.state_dict(),
             'main_net1_state_dict': main_net1.state_dict(),
             'main_net2_state_dict': main_net2.state_dict(),
+            'main_net3_state_dict': main_net3.state_dict(),
+            'main_net4_state_dict': main_net4.state_dict(),
+            'main_net0_state_dict': main_net0.state_dict(),
             'optimizer1_state_dict': optimizer1.state_dict(),
         }, f'combined_model_epoch_{epoch}.pth')
         print(f"Model saved at epoch {epoch} as 'combined_model_epoch_{epoch}.pth'.")
