@@ -29,14 +29,15 @@ patience_opim = 5
 patience = 5  # 早停参数
 dropout_value = 0.3
 #定义一个映射，E_trans = E/energy_shift_value + energy_shift_value2
-energy_shift_value = 100
+energy_shift_value = 200
 energy_shift_value2 = 0
 force_shift_value = 1
-a = 1/100
-b = 10
+#a和b分别是energy_loss和force_loss的初始系数，update_param是这俩参数更新频率，n个batch更新一次
+a = 1/energy_shift_value
+b = energy_shift_value
 update_param = 5
-max_norm_value = 1
-batch_size = 1
+max_norm_value = 10 #梯度裁剪参数
+batch_size = 16
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
     def __init__(self):
@@ -88,8 +89,11 @@ class EmbedNet(nn.Module):
         self.one_hot_mlp = nn.Sequential(
             nn.Linear(128, embed_size),
             nn.Tanh(),
-            nn.Linear(embed_size, embed_size)
-        )
+            nn.Linear(embed_size, embed_size))
+        self.one_hot_mlp_2 = nn.Sequential(
+            nn.Linear(128, embed_size),
+            nn.Tanh(),
+            nn.Linear(embed_size, 1))
         # 定义线性变换层，用于生成 Q, K 和 V
         self.q_linear_1 = nn.Linear(embed_size, embed_size)
         self.k_linear_1 = nn.Linear(embed_size, embed_size)
@@ -101,9 +105,9 @@ class EmbedNet(nn.Module):
         self.k_linear_3 = nn.Linear(embed_size, embed_size)
         self.v_linear_3 = nn.Linear(embed_size, embed_size)
         self.tensor_product = TensorProduct(
-            irreps_in1="1x0e + 1x1o + 1x2e + 1x3o",  # Y_combined 对应 l=0, l=1, l=2，包含 9 个分量
-            irreps_in2="1x0e + 1x1o + 1x2e + 1x3o",  
-            irreps_out = "1x0e + 1x1o + 1x2e + 1x3o + 1x1e + 1x2o + 1x3e",  # 输出结果，lmax截断到3
+            irreps_in1="1x0e + 1x1o + 1x2e + 1x3o", # Y_combined 对应 l=0, l=1, l=2，包含 9 个分量
+            irreps_in2="1x0e + 1x1o + 1x2e + 1x3o", 
+            irreps_out = "1x0e + 1x1o + 1x2e + 1x3o + 1x1e + 1x2o + 1x3e ",  # 输出结果，可以考虑包含 l=0, l=1, l=2, l=3 的组合用来占位
             instructions=[
                 (0, 0, 0, "uvw", True, 1.0),  
                 (0, 1, 1, "uvw", True, 1.0),  
@@ -136,6 +140,18 @@ class EmbedNet(nn.Module):
                 (3, 3, 4, "uvw", True, 1.0),  
                 (3, 3, 2, "uvw", True, 1.0),  
                 (3, 3, 6, "uvw", True, 1.0), ])
+        self.tensor_product_2 = TensorProduct(
+            irreps_in1="1x0e",           
+            irreps_in2="1x0e + 1x1o + 1x2e + 1x3o +1x1e + 1x2o + 1x3e ",  
+            irreps_out="1x0e + 1x1o + 1x2e + 1x3o +1x1e + 1x2o + 1x3e ", 
+            instructions=[
+            (0, 0, 0, "uvw", True, 1.0),  
+            (0, 1, 1, "uvw", True, 1.0),  
+            (0, 2, 2, "uvw", True, 1.0),
+            (0, 3, 3, "uvw", True, 1.0),  
+            (0, 4, 4, "uvw", True, 1.0),  
+            (0, 5, 5, "uvw", True, 1.0),
+            (0, 6, 6, "uvw", True, 1.0),])
     def calculate_attention(self, Q, K, V, H, embed_size, num_heads, num_layers):
     # 检查 embed_size 是否能被 num_heads 整除
         assert embed_size % num_heads == 0 #embed_size 必须是 num_heads 的整数倍
@@ -172,14 +188,16 @@ class EmbedNet(nn.Module):
             Q = self.layer_norm_2(Q)
         return Q
     def forward(self, R):
-        # 第五列进行 One-Hot 编码
+        # 进行 One-Hot 编码
         R5_one_hot = F.one_hot(R[:, 4].long(), num_classes=128).float()
         O = self.one_hot_mlp(R5_one_hot)  # 使用 MLP 对 One-Hot 编码进行处理
+        R6_one_hot = F.one_hot(R[:, 5].long(), num_classes=128).float()
+        B = self.one_hot_mlp_2(R6_one_hot)  # 使用 MLP 对 One-Hot 编码进行处理
         G_input = R[:, [0, 4, 5]]  # 第1, 5, 6列
         G = self.mlp(G_input)  # 经过 MLP 生成 G
         Z = R[:, 1:4]  # 取第2, 3, 4列作为 Z 
         H = self.mlp2(Z)
-        Si = R[:,[0]]
+        Si = R[:,0]
         S = self.mlp3(Si)
         G_t = G.transpose(0, 1) 
         Z_t = Z.transpose(0, 1) 
@@ -196,33 +214,32 @@ class EmbedNet(nn.Module):
         QA = self.q_linear_1(A) 
         KA = self.k_linear_1(A)
         #VA = self.v_linear_1(A)
+        QO = self.q_linear_3(O)
+        KO = self.k_linear_3(O)
         VO = self.v_linear_3(O)
-        QS = self.q_linear_2(S) 
-        KS = self.k_linear_2(S)  
-        VS = self.v_linear_2(S)
+        #QS = self.q_linear_2(S) 
+        #KS = self.k_linear_2(S)  
+        #VS = self.v_linear_2(S)
         f = fit_net(Si)
-        Y = o3.spherical_harmonics(0, Z,normalize=True)  # l=0
-        Y = f * Y
-        Y1 = o3.spherical_harmonics(1, Z,normalize=True)  # l=1
-        Y1 = f * Y1
-        Y2 = o3.spherical_harmonics(2, Z,normalize=True)  # l=2
-        Y2 = f * Y2
-        Y3 = o3.spherical_harmonics(3, Z,normalize=True)  # l=2
-        Y3 = f * Y3
+        Y = f * o3.spherical_harmonics(0, Z,normalize=True)  # l=0
+        Y1 = f * o3.spherical_harmonics(1, Z,normalize=True)  # l=1
+        Y2 = f * o3.spherical_harmonics(2, Z,normalize=True)  # l=2
+        Y3 = f * o3.spherical_harmonics(3, Z,normalize=True)  # l=3
         Y_combined = torch.cat([Y, Y1, Y2, Y3], dim=-1)  # 合并三种阶数的球谐函数
         # 耦合
         N = self.tensor_product(Y_combined, Y_combined)
+        N = self.tensor_product_2(B,N)
         N = self.mlp4(N)
         N = self.positional_encoding(N)
         #print(f"Nshape:{N.shape}")
-        # 通过多个 Transformer Encoder 层分别对多个矩阵进行处理
+        #对多个矩阵进行处理
         for layer in self.encoder_layers:
             #H = layer(QH, KH, VH)
             A = layer(QA, KA, VO)
             #G = layer(QG, KG, VG)
             #S = layer(QS, KS, VS)
         # 将三个矩阵（Z, A, G）连接起来
-        S_attention = self.calculate_attention(QS, KS,VS, N, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers)
+        S_attention = self.calculate_attention(QO, KO,VO, N, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers)
         output = torch.cat([A,S_attention], dim=-1)
         return output
 class PositionalEncoding(nn.Module):
@@ -247,7 +264,7 @@ class TransformerEncoderLayer(nn.Module):
         self.self_attn = nn.MultiheadAttention(embed_dim=embed_size, num_heads=num_heads, dropout=dropout_rate, batch_first=True)
         # 前馈网络
         self.feed_forward = nn.Sequential(
-            nn.Linear(embed_size, embed_size * 4),  # 扩展4倍用于激活后再压缩
+            nn.Linear(embed_size, embed_size * 4),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
             nn.Linear(embed_size * 4, embed_size))
@@ -259,7 +276,7 @@ class TransformerEncoderLayer(nn.Module):
         self.dropout2 = nn.Dropout(dropout_rate)
     def forward(self, Q, K, V):
         # 1. 自注意力层
-        attn_output, _ = self.self_attn(Q, K, V)  # Self-attention
+        attn_output, _ = self.self_attn(Q, K, V) 
         Q = Q + self.dropout1(attn_output)  # 残差连接
         Q = self.norm1(Q)  # 层归一化
         # 2. 前馈网络层
@@ -303,7 +320,7 @@ class MainNet2(nn.Module):
     def forward(self, M):
         x = M
         for layer in self.layers:
-            x = F.relu(layer(x))
+            x = F.tanh(layer(x))
             x = self.dropout(x)
         Y = self.output(x)
         return Y
