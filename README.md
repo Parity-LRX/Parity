@@ -6,42 +6,54 @@
 2. **运行 `read-input.py`**
    - 该步骤将处理输入数据，并进行必要的数据准备。
 
-3. **运行 `read-0.py`**
+3. **运行 `read-treat.py`**
    - 该步骤将执行数据的过滤和保存。
 
 4. **运行 `train-force.py`**
    - 该步骤用于训练模型。
 
-## 需要安装的库
+# 安装依赖
 
-1. **numpy**: 用于高效的数值计算，特别是处理数组。
-   - 安装命令: `pip install numpy`
+此项目运行所需的 Python 库及其安装命令如下：
 
-2. **pandas**: 用于数据处理和分析，尤其是操作数据框（DataFrame）。
-   - 安装命令: `pip install pandas`
+### 必要的库
 
-3. **pytorch ≥2.4.1 with CUDA ≥12.2**: 用于深度学习训练和模型构建，CUDA 用于加速计算。
-   - 安装命令: 
-     - 对于有 CUDA 支持的版本，可以使用如下命令安装：
-       ```bash
-       pip install torch==2.4.1+cu12.2 torchvision==0.15.1+cu12.2 torchaudio==2.4.1+cu12.2
-       ```
-     - 如果没有 CUDA 支持，直接安装 PyTorch：
-       ```bash
-       pip install torch==2.4.1
-       ```
+- **numpy**: 用于高效的数值计算，特别是处理数组。
+  - 安装命令: `pip install numpy`
 
-## 安装其他可能需要的库
+- **pandas**: 用于数据处理和分析，尤其是操作数据框（DataFrame）。
+  - 安装命令: `pip install pandas`
 
-1. **torch.utils.tensorboard**: 用于在训练过程中记录日志并可视化模型训练过程。
-   - 安装命令: `pip install tensorboard`
-   
-2. **scikit-learn**: 提供常用的机器学习工具，如数据预处理和模型评估等。
-   - 安装命令: `pip install scikit-learn`
+- **pytorch ≥2.4.1 with CUDA ≥12.2**: 用于深度学习训练和模型构建，CUDA 用于加速计算。
+  - 安装命令:
+    - 对于有 CUDA 支持的版本，可以使用如下命令安装：
+      ```bash
+      pip install torch==2.4.1+cu12.2 torchvision==0.15.1+cu12.2 torchaudio==2.4.1+cu12.2
+      ```
+    - 如果没有 CUDA 支持，直接安装 PyTorch：
+      ```bash
+      pip install torch==2.4.1
+      ```
 
-3. **torch.amp (Automatic Mixed Precision)**: 提供混合精度训练，帮助提高训练速度。
-   - 已包含在 PyTorch 安装包中，无需单独安装。
-   - 需要注意，一开始训练时请勿打开混合精度训练功能，数值会极其不稳定，导致梯度消失。
+- **torch_scatter**: 用于在图神经网络中进行散射操作的库，支持稀疏张量操作。
+  - 安装命令: `pip install torch-scatter`
+
+- **e3nn**: 用于处理图形卷积神经网络中的对称性操作，专门用于处理对称张量、群表示和等变神经网络。
+  - 安装命令: `pip install e3nn`
+
+- **torch.utils.tensorboard**: 用于在训练过程中记录日志并可视化模型训练过程。
+  - 安装命令: `pip install tensorboard`
+
+- **scikit-learn**: 提供常用的机器学习工具，如数据预处理和模型评估等。
+  - 安装命令: `pip install scikit-learn`
+
+- **torch.amp (Automatic Mixed Precision)**: 提供混合精度训练，帮助提高训练速度。
+  - 已包含在 PyTorch 安装包中，无需单独安装。
+
+### 注意事项
+
+- 在训练时，请勿一开始开启混合精度训练功能，因为数值可能会不稳定，导致梯度消失。建议先进行一些初步训练后再启用混合精度训练。
+
 
 
 # 以下是代码过程分享
