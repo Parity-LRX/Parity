@@ -22,7 +22,7 @@ torch.amp.autocast(device_type='cuda', enabled=True)
 # 训练模型参数
 epoch_numbers = 100
 learning_rate = 0.00001
-embed_size = 32
+embed_size = 20
 num_heads = 4  # 多头注意力头数
 num_layers = 8  # Transformer层数
 main_hidden_sizes1 = [100,100]
@@ -195,7 +195,7 @@ class EmbedNet(nn.Module):
             Q = self.layer_norm_2(Q)
         return Q
     def e3_conv(self,f_in, pos):
-        irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e")
+        irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
         irreps_output = o3.Irreps("5x0e + 5x1o")
         origin = torch.zeros_like(pos[0]).to(device)  # 中心原子坐标
         # 构造 edge_src 和 edge_dst
@@ -283,16 +283,16 @@ class EmbedNet(nn.Module):
             # 如果缓存中没有，计算并缓存
             Y_combined = o3.spherical_harmonics(Y_sh, Z, True, normalization='component')
             self.cache[Z_key] = Y_combined  # 将计算结果存入缓存
-        E = self.e3_conv(Y_combined,Z)
+        A = self.tensor_product_3(G,Y_combined)
+        E = self.e3_conv(A,Z)
         # 耦合
         #N = self.tensor_product(Y_combined, Y_combined)
         #C = self.tensor_product_2(f,Y_combined)
-        CN = self.mlp4(E)
-        CN = self.positional_encoding(CN)
+        CN = self.positional_encoding(E)
         #G_t = G.transpose(0, 1) 
         #Z_t = Z.transpose(0, 1) 
         #A = torch.matmul(torch.matmul(Z, Z_t),G)
-        A = self.tensor_product_3(G,Y_combined)
+        
         AN = self.mlp5(A)
         AN = self.positional_encoding(AN) 
         #H = self.positional_encoding(H)
@@ -508,7 +508,7 @@ embed_net2 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_he
 embed_net3 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
 embed_net4 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
 embed_net0 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
-main_net1 = MainNet(input_size=46*max_atom , hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)#给虚原子的embednet
+main_net1 = MainNet(input_size=34*max_atom , hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)#给虚原子的embednet
 main_net2 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
 main_net3 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
 main_net4 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
