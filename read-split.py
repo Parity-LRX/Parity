@@ -1,7 +1,8 @@
 import pandas as pd
 import numpy as np
+
 file_path = 'data.csv'  # 替换为你的数据文件路径
-max_atom = 1#不用虚原子直接设为1
+max_atom = 1  # 不用虚原子直接设为1
 
 def extract_data_blocks(file_path):
     with open(file_path, 'r') as file:
@@ -17,14 +18,17 @@ def extract_data_blocks(file_path):
 
     for line in data:
         line = line.strip()
-        if line.startswith("energy"):
-            # 提取 energy 值
-            energy = float(line.split("energy=")[1].split()[0])
+        if line.startswith("Properties"):
+            # 提取 energy 值，并确保为 float64
+            energy = np.float64(line.split("energy=")[1].split()[0])
         elif any(line.startswith(element) for element in elements):  # 判断是否以元素符号开头
             # 提取分子的坐标和属性
             parts = line.split()
             if len(parts) >= 7:  # 确保至少有 7 列
-                position = [float(parts[1]), float(parts[2]), float(parts[3]), float(parts[7]), float(parts[4]), float(parts[5]), float(parts[6])]  # x, y, z, A, Fx, Fy, Fz
+                position = [
+                    np.float64(parts[1]), np.float64(parts[2]), np.float64(parts[3]),
+                    np.float64(parts[7]), np.float64(parts[4]), np.float64(parts[5]), np.float64(parts[6])
+                ]  # x, y, z, A, Fx, Fy, Fz
                 current_block.append(position)
         elif line.isdigit():
             # 如果遇到空行，意味着一个数据块结束
@@ -33,7 +37,6 @@ def extract_data_blocks(file_path):
                 energy_list.append(energy)
                 current_block = []  # 清空当前块
                 energy = None  # 重置能量
-
 
     # 处理最后一个数据块（如果没有以空行结束）
     if current_block and energy is not None:
@@ -50,7 +53,7 @@ data_size = len(data_blocks)
 indices = np.arange(data_size)
 np.random.shuffle(indices)
 
-train_size = int(0.9 * data_size)
+train_size = int(0.99 * data_size)
 train_indices = indices[:train_size]
 val_indices = indices[train_size:]
 
@@ -62,8 +65,8 @@ val_data_blocks = [data_blocks[i] for i in val_indices]
 val_energy_list = [energy_list[i] for i in val_indices]
 
 # 保存 energy 到 energy_train.csv 和 energy_val.csv
-train_energy_df = pd.DataFrame(train_energy_list, columns=['Energy'])
-val_energy_df = pd.DataFrame(val_energy_list, columns=['Energy'])
+train_energy_df = pd.DataFrame(np.float64(train_energy_list), columns=['Energy'])
+val_energy_df = pd.DataFrame(np.float64(val_energy_list), columns=['Energy'])
 
 # 同时保存为 CSV 和 HDF5
 train_energy_df.to_csv('energy_train.csv', index=False)
@@ -89,17 +92,17 @@ def save_data_to_csv_and_h5(data_blocks, csv_filename, h5_filename):
             Fx = 0
             Fy = 0
             Fz = 0
-            block.append([x, y, z, A, Fx, Fy ,Fz])
+            block.append([np.float64(x), np.float64(y), np.float64(z), np.float64(A), np.float64(Fx), np.float64(Fy), np.float64(Fz)])
 
         for row_number, entry in enumerate(block, start=0):  # 增加行号，从0开始
-            all_data.append([row_number] + entry)  # 在每行的开头加上行号
-        all_data.append([128128])
+            all_data.append([np.float64(row_number)] + entry)  # 在每行的开头加上行号，并转换为 float64
+        all_data.append([np.float64(128128)])
 
     # 去掉最后一个多余的空行
-    if all_data and all_data[-1] == [128128]:
+    if all_data and all_data[-1] == [np.float64(128128)]:
         all_data.pop()
 
-    data_df = pd.DataFrame(all_data, columns=['Dimension', 'x', 'y', 'z', 'A','Fx', 'Fy', 'Fz'])
+    data_df = pd.DataFrame(all_data, columns=['Dimension', 'x', 'y', 'z', 'A', 'Fx', 'Fy', 'Fz'])
 
     # 同时保存为 CSV 和 HDF5
     data_df.to_csv(csv_filename, index=False)
