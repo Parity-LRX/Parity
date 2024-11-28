@@ -646,9 +646,9 @@ for epoch in range(1, epoch_numbers + 1):
             fy_ref = read_tensor[:, 6] * force_shift_value
             fz_ref = read_tensor[:, 7] * force_shift_value
             dimensions = input_tensor[:, 0].unique().tolist()
-            E_sums_per_molecule = []
             fx_pred_per_molecule, fy_pred_per_molecule, fz_pred_per_molecule = [], [], []
             pos = read_tensor[:,[1,2,3]]
+            pos.requires_grad = True
             all_E = [] 
             E_sum = torch.zeros(1, dtype=torch.float32, device=device, requires_grad=True)
             for dim in dimensions:
@@ -657,42 +657,32 @@ for epoch in range(1, epoch_numbers + 1):
                 embed_value = filtered_block[0, 5].item()
                 R = compute_R(filtered_block)
                 E = compute_E(R, embed_value)
-                E_sums_per_molecule.append(E)
                 all_E.append(E)
-                E = E.sum()
-                E.backward(retain_graph=True)
-                #print(f"E:{E_sums_per_molecule}")
-                fx_pred = -R.grad[:, 1]
-                fy_pred = -R.grad[:, 2]
-                fz_pred = -R.grad[:, 3]
-                fx_pred_all.append(fx_pred.sum().item())
-                fy_pred_all.append(fy_pred.sum().item())
-                fz_pred_all.append(fz_pred.sum().item())
-                #print(E*energy_shift_value)
-                R.grad.zero_() 
             E_cat = all_E_tensor = torch.cat(all_E, dim=0)
             E_conv = e3conv_layer(E_cat,pos)
             E_conv = E_conv.sum()
             E_conv.backward(retain_graph=True)
-            fx_pred_conv = -R.grad[:, 1]
-            print(fx_pred_conv)
+            fx_pred_conv = -pos.grad[:, 0]
+            fy_pred_conv = -pos.grad[:, 1]
+            fz_pred_conv = -pos.grad[:, 2]
+            pos.grad.zero_()
             print(E_conv)
-            total_E_sum = sum(E_sums_per_molecule)
-            print(f"Total E_sum for this molecule: {train_dataset.restore_energy(total_E_sum)}")
-            E_sum_all.append(total_E_sum)
+            #total_E_sum = sum(E_sums_per_molecule)
+            print(f"Total E_sum for this molecule: {train_dataset.restore_energy(E_conv)}")
+            E_sum_all.append(E_conv)
             #print(E_sum_all)
-            fx_pred_all = torch.tensor(fx_pred_all, device=device).view(-1)
-            print(f"froce_x:{train_dataset.restore_force(fx_pred_all)}")
-            fy_pred_all = torch.tensor(fy_pred_all, device=device).view(-1)
-            fz_pred_all = torch.tensor(fz_pred_all, device=device).view(-1)
+            fx_pred_conv_batch = fx_pred_conv.clone().detach().to(device).view(-1)
+            print(f"froce_x:{train_dataset.restore_force(fx_pred_conv_batch)}")
+            fy_pred_conv_batch = fy_pred_conv.clone().detach().to(device).view(-1)
+            fz_pred_conv_batch = fz_pred_conv.clone().detach().to(device).view(-1)
         force_loss = (
-            criterion(fx_pred_all, fx_ref.detach().to(device).view(-1)) +
-            criterion(fy_pred_all, fy_ref.detach().to(device).view(-1)) +
-            criterion(fz_pred_all, fz_ref.detach().to(device).view(-1))) / 3 / len(dimensions)
+            criterion(fx_pred_conv_batch, fx_ref.detach().to(device).view(-1)) +
+            criterion(fy_pred_conv_batch, fy_ref.detach().to(device).view(-1)) +
+            criterion(fz_pred_conv_batch, fz_ref.detach().to(device).view(-1))) / 3 / len(dimensions)
         force_rmse = train_dataset.restore_force((
-            criterion_2(fx_pred_all, fx_ref.detach().to(device).view(-1)) +
-            criterion_2(fy_pred_all, fy_ref.detach().to(device).view(-1)) +
-            criterion_2(fz_pred_all, fz_ref.detach().to(device).view(-1))) / 3 /len(dimensions))
+            criterion_2(fx_pred_conv_batch, fx_ref.detach().to(device).view(-1)) +
+            criterion_2(fy_pred_conv_batch, fy_ref.detach().to(device).view(-1)) +
+            criterion_2(fz_pred_conv_batch, fz_ref.detach().to(device).view(-1))) / 3 /len(dimensions))
         batch_force_loss += force_loss.item()
         E_sum_tensor = torch.tensor(E_sum_all, device=device,requires_grad=True).view(-1)
         #print(E_sum_all)
@@ -736,10 +726,12 @@ for epoch in range(1, epoch_numbers + 1):
             fx_pred_all_val = []
             fy_pred_all_val = []
             fz_pred_all_val = []
+            pos_val = read_tensor[:,[1,2,3]]
+            pos_val.requires_grad = True
             fx_ref_val = read_tensor[:, 5]* force_shift_value  # x 方向参考力
             fy_ref_val = read_tensor[:, 6]* force_shift_value  # y 方向参考力
             fz_ref_val = read_tensor[:, 7]* force_shift_value   # z 方向参考力
-            E_sums_per_molecule_val = []
+            all_E_val = [] 
             E_sum_val = torch.zeros(1, dtype=torch.float32, device=device).to(device)
             for dim in dimensions:
                 mask = input_tensor[:, 0] == dim  # 第一列是维度列，选择当前维度的行
@@ -747,31 +739,28 @@ for epoch in range(1, epoch_numbers + 1):
                 embed_value = filtered_block[0, 5].item()  # 假设第一行的某列代表嵌入值
                 R_val = compute_R(filtered_block).requires_grad_(True)
                 E_val = compute_E(R_val, embed_value).requires_grad_(True)
-                E_val.backward(retain_graph=True)
-                E_sums_per_molecule_val.append(E_val.item())           
-                fx_pred_val = -R_val.grad[:, 1]  # 对 x 坐标求导
-                fy_pred_val = -R_val.grad[:, 2]  # 对 y 坐标求导
-                fz_pred_val = -R_val.grad[:, 3]  # 对 z 坐标求导 
-                fx_pred_sum_val = fx_pred_val.sum().item()
-                fy_pred_sum_val = fy_pred_val.sum().item()
-                fz_pred_sum_val = fz_pred_val.sum().item()
-                fx_pred_all_val.append(fx_pred_sum_val)
-                fy_pred_all_val.append(fy_pred_sum_val)
-                fz_pred_all_val.append(fz_pred_sum_val)
-                R_val.grad.zero_()
-            total_E_sum_val = sum(E_sums_per_molecule_val)
-            print(f"Total E_sum_val for this molecule: {val_dataset.restore_energy(total_E_sum_val)}")
-            E_sum_all_val.append(total_E_sum_val) 
-            fx_pred_all_val = torch.tensor(fx_pred_all_val, device=device).view(-1)
-            fy_pred_all_val = torch.tensor(fy_pred_all_val, device=device).view(-1)
-            fz_pred_all_val = torch.tensor(fz_pred_all_val, device=device).view(-1)
+                all_E_val.append(E_val)           
+            E_cat_val = all_E_tensor = torch.cat(all_E_val, dim=0)
+            E_conv_val = e3conv_layer(E_cat_val,pos_val)
+            E_conv_val = E_conv_val.sum()
+            E_conv_val.backward(retain_graph=True)
+            E_sum_all_val.append(E_conv_val) 
+            print(f"Total E_sum_val for this molecule: {val_dataset.restore_energy(E_conv_val)}")
+            fx_pred_conv_val = -pos_val.grad[:, 0]
+            fy_pred_conv_val = -pos_val.grad[:, 1]
+            fz_pred_conv_val = -pos_val.grad[:, 2]
+            
+            fx_pred_conv_batch_val = fx_pred_conv_val.clone().detach().to(device).view(-1)
+            fy_pred_conv_batch_val = fy_pred_conv_val.clone().detach().to(device).view(-1)
+            fz_pred_conv_batch_val = fz_pred_conv_val.clone().detach().to(device).view(-1)
+                        
         fx_ref_val = fx_ref_val.detach().to(device).view(-1)
         fy_ref_val = fy_ref_val.detach().to(device).view(-1)
         fz_ref_val = fz_ref_val.detach().to(device).view(-1)
         force_loss_val = val_dataset.restore_force((
-            criterion_2(fx_pred_all_val, fx_ref_val) +
-            criterion_2(fy_pred_all_val, fy_ref_val) +
-            criterion_2(fz_pred_all_val, fz_ref_val)) / 3 / len(dimensions))
+            criterion_2(fx_pred_conv_batch_val, fx_ref_val) +
+            criterion_2(fx_pred_conv_batch_val, fy_ref_val) +
+            criterion_2(fx_pred_conv_batch_val, fz_ref_val)) / 3 / len(dimensions))
         E_sum_val_tensor = torch.tensor(E_sum_all_val, device=device,requires_grad=True).view(-1)
         energy_loss_val = val_dataset.restore_force(criterion_2(E_sum_tensor, target_energies))
         total_energy_loss_val = energy_loss_val.item()
