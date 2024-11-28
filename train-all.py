@@ -582,11 +582,9 @@ if os.path.exists(checkpoint_path):
     embed_net3.load_state_dict(checkpoint['embed_net3_state_dict'])
     embed_net4.load_state_dict(checkpoint['embed_net4_state_dict'])
     embed_net0.load_state_dict(checkpoint['embed_net0_state_dict'])
-    main_net1.load_state_dict(checkpoint['main_net1_state_dict'])
-    main_net2.load_state_dict(checkpoint['main_net2_state_dict'])
-    main_net3.load_state_dict(checkpoint['main_net3_state_dict'])
-    main_net4.load_state_dict(checkpoint['main_net4_state_dict'])
-    main_net0.load_state_dict(checkpoint['main_net0_state_dict'])
+    main_net1.load_state_dict(checkpoint['main_net1'])
+    fit_net.load_state_dict(checkpoint['fit_net_state_dict'])
+    e3conv_layer.load_state_dict(checkpoint['e3conv_layer_state_dict'])
     optimizer1.load_state_dict(checkpoint['optimizer1_state_dict'])
     scheduler1.load_state_dict(checkpoint["scheduler_state_dict"])
     #a = checkpoint["a"]
@@ -811,10 +809,8 @@ for epoch in range(1, epoch_numbers + 1):
                 'embed_net4_state_dict': embed_net4.state_dict(),
                 'embed_net0_state_dict': embed_net0.state_dict(),
                 'main_net1_state_dict': main_net1.state_dict(),
-                'main_net2_state_dict': main_net2.state_dict(),
-                'main_net3_state_dict': main_net3.state_dict(),
-                'main_net4_state_dict': main_net4.state_dict(),
-                'main_net0_state_dict': main_net0.state_dict(),
+                'fit_net_state_dict': fit_net.state_dict(),
+                'e3conv_layer_state_dict': e3conv_layer.state_dict(),
                 'optimizer1_state_dict': optimizer1.state_dict(),
                 "scheduler_state_dict": scheduler1.state_dict(),
                 "a": a, 
@@ -863,11 +859,8 @@ torch.save({
         'embed_net3_state_dict': embed_net3.state_dict(),
         'embed_net4_state_dict': embed_net4.state_dict(),
         'embed_net0_state_dict': embed_net0.state_dict(),
-        'main_net1_state_dict': main_net1.state_dict(),
-        'main_net2_state_dict': main_net2.state_dict(),
-        'main_net3_state_dict': main_net3.state_dict(),
-        'main_net4_state_dict': main_net4.state_dict(),
-        'main_net0_state_dict': main_net0.state_dict(),
+        'fit_net_state_dict': fit_net.state_dict(),
+        'e3conv_layer_state_dict': e3conv_layer.state_dict(),
         'optimizer1_state_dict': optimizer1.state_dict(),
         "scheduler_state_dict": scheduler1.state_dict(),
         "a": a, 
