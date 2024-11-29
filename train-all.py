@@ -22,7 +22,7 @@ torch.autograd.set_detect_anomaly(True)
 torch.amp.autocast(device_type='cuda', enabled=True)
 # 训练模型参数
 epoch_numbers = 100
-learning_rate = 0.00001
+learning_rate = 0.0001
 embed_size = 20
 num_heads = 4  # 多头注意力头数
 num_layers = 4  # Transformer层数
@@ -33,8 +33,8 @@ input_size_value = 6 #R的维度
 invariant = 0.5
 equivariant = 1 - invariant
 """e3层参数"""
-irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o + 1x4e")
-irreps_output_conv = o3.Irreps("5x0e + 5x1o")
+irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
+irreps_output_conv = o3.Irreps("5x0e + 5x1o + 5x2e")
 irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_query = o3.Irreps("5x0e + 2x1o")
 irreps_key = o3.Irreps("2x0e + 5x1o") 
@@ -56,7 +56,7 @@ a = 1/10
 b = 10
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
-batch_size = 1
+batch_size = 32
 max_atom = 10
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
@@ -227,7 +227,7 @@ class EmbedNet(nn.Module):
         #O = self.one_hot_mlp(R5_one_hot)  # 使用 MLP 对 One-Hot 编码进行处理
         R6_one_hot = F.one_hot(R[:, 5].long(), num_classes=10).float()
         B = self.one_hot_mlp_2(R6_one_hot)  # 使用 MLP 对 One-Hot 编码进行处理
-        B = fit_net(B)
+        #B = fit_net(B)
         Y_sh = o3.Irreps.spherical_harmonics(lmax=2)
         G_key = tuple(R[:, [0, 4, 5]])  # 使用 G 的形状作为缓存的键
         if G_key in self.cache:
@@ -386,13 +386,13 @@ class E3Conv(nn.Module):
         self.number_of_basis = number_of_basis
         self.irreps_input = o3.Irreps("10x0e")
         self.irreps_output = o3.Irreps(irreps_output)
-        self.irreps_sh = o3.Irreps.spherical_harmonics(3)
+        self.irreps_sh = o3.Irreps.spherical_harmonics(lmax=2)
         
         # 初始化 TensorProduct 和 FullyConnectedNet
         self.tp = o3.FullyConnectedTensorProduct(
             self.irreps_input, self.irreps_sh, self.irreps_output, shared_weights=False
         )
-        self.fc = e3nn_nn.FullyConnectedNet([number_of_basis, hidden_dim, self.tp.weight_numel], torch.relu)
+        self.fc = e3nn_nn.FullyConnectedNet([number_of_basis, hidden_dim, self.tp.weight_numel], torch.nn.functional.silu)
 
     def forward(self, f_in, pos):
         edge_src, edge_dst = radius_graph(pos, self.max_radius, max_num_neighbors=len(pos) - 1)
@@ -705,6 +705,7 @@ for epoch in range(1, epoch_numbers + 1):
         embed_net3.eval()
         embed_net4.eval()
         embed_net0.eval()
+        e3conv_layer.eval()
         main_net1.eval()
         main_net2.eval()
         main_net3.eval()
@@ -795,6 +796,7 @@ for epoch in range(1, epoch_numbers + 1):
         embed_net3.train()
         embed_net4.train()
         embed_net0.train()
+        e3conv_layer.train()
         main_net1.train()
         main_net2.train()
         main_net3.train()
