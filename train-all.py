@@ -44,7 +44,7 @@ irreps_sh_transformer = o3.Irreps.spherical_harmonics(lmax=3)
 number_of_basis = 6 #e3nn中基函数的数量
 max_radius = 6
 
-patience_opim = 5
+patience_opim = 2
 patience = 10  # 早停参数
 dropout_value = 0.4
 #定义一个映射，E_trans = E/energy_shift_value + energy_shift_value2
@@ -570,9 +570,9 @@ fit_net = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=d
 e3conv_layer = E3Conv(max_radius, number_of_basis, irreps_input, irreps_output, hidden_dim=16).to(device)
 optimizer1 = torch.optim.AdamW(
     list(embed_net1.parameters()) + list(embed_net2.parameters()) + list(embed_net3.parameters()) + list(embed_net4.parameters()) + list(embed_net0.parameters()) +
-    list(main_net1.parameters()) + list(main_net2.parameters()) + list(main_net3.parameters()) + list(main_net4.parameters()) + list(main_net0.parameters()),
+    list(main_net1.parameters()) + list(e3conv_layer.parameters()),
     lr=learning_rate,weight_decay=0.01)
-scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, mode='min', factor=0.9, patience=patience_opim)
+scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, mode='min', factor=0.1, patience=patience_opim)
 # 检查是否存在之前保存的模型文件
 checkpoint_path = 'combined_model.pth'
 if os.path.exists(checkpoint_path):
@@ -582,14 +582,14 @@ if os.path.exists(checkpoint_path):
     embed_net3.load_state_dict(checkpoint['embed_net3_state_dict'])
     embed_net4.load_state_dict(checkpoint['embed_net4_state_dict'])
     embed_net0.load_state_dict(checkpoint['embed_net0_state_dict'])
-    main_net1.load_state_dict(checkpoint['main_net1'])
+    #main_net1.load_state_dict(checkpoint['main_net1'])
     fit_net.load_state_dict(checkpoint['fit_net_state_dict'])
     e3conv_layer.load_state_dict(checkpoint['e3conv_layer_state_dict'])
     optimizer1.load_state_dict(checkpoint['optimizer1_state_dict'])
     scheduler1.load_state_dict(checkpoint["scheduler_state_dict"])
     #a = checkpoint["a"]
     #b = checkpoint["b"]
-    #batch_count = checkpoint["batch_count"]
+    batch_count = checkpoint["batch_count"]
     print("Loaded model from checkpoint.")
 else:
     print("No checkpoint found. Starting training from scratch.")
