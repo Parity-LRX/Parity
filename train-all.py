@@ -162,7 +162,7 @@ class EmbedNet(nn.Module):
             irreps_in1="1x0e + 1x1o + 1x2e",           
             irreps_in2="1x0e + 1x1o + 1x2e", 
             irreps_out="1x0e + 1x1o + 1x2e + 1x3o", 
-            shared_weights=False,  # 是否共享权重
+            shared_weights=True,  # 是否共享权重
             internal_weights=True,  # 使用内部生成的权重
             normalization="component"  # 特征归一化方式，可选值 "component" 或 "norm"
         )
