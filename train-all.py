@@ -20,9 +20,10 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message=".*TorchScript.*")
 torch.autograd.set_detect_anomaly(True)
 torch.amp.autocast(device_type='cuda', enabled=True)
+max_atom = 20
 # 训练模型参数
 epoch_numbers = 100
-learning_rate = 0.0001
+learning_rate = 0.00001
 embed_size = 20
 num_heads = 4  # 多头注意力头数
 num_layers = 4  # Transformer层数
@@ -32,18 +33,23 @@ main_hidden_sizes3 = [32]
 input_size_value = 6 #R的维度
 invariant = 0.5
 equivariant = 1 - invariant
-"""e3层参数"""
+"""embnet中e3层参数"""
 irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_output_conv = o3.Irreps("1x0e + 1x1o + 1x2e")
-irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e")
-irreps_query = o3.Irreps("5x0e + 2x1o")
-irreps_key = o3.Irreps("1x0e + 1x1o") 
+irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
+irreps_query = o3.Irreps("5x0e + 5x1o")
+irreps_key = o3.Irreps("1x0e + 5x1o") 
 irreps_output = o3.Irreps("1x0e+ 1x1o") # 与v的不可约表示一致
 irreps_sh_conv = o3.Irreps.spherical_harmonics(lmax=2)
 irreps_sh_transformer = o3.Irreps.spherical_harmonics(lmax=3)
 number_of_basis = 8 #e3nn中基函数的数量
 emb_number = 32
 max_radius = 6
+"""mainnet中e3层参数"""
+irreps_input_conv_main = o3.Irreps(f"{max_atom}x0e+ {max_atom}x1o")
+irreps_output_conv_main = o3.Irreps("1x0e")
+irreps_input_conv_main_2 = irreps_output_conv_main
+irreps_output_conv_main_2 = o3.Irreps("1x0e")
 
 patience_opim = 10
 patience = 10  # 早停参数
@@ -58,7 +64,6 @@ b = 10
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
 batch_size = 16
-max_atom = 10
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
     def __init__(self):
@@ -70,10 +75,14 @@ criterion_2 = RMSELoss()
 criterion = nn.MSELoss()
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#确定数据放缩范围
+energy_df = pd.read_hdf("energy_train.h5")
+energy_max = energy_df['Energy'].max()
+energy_min = energy_df['Energy'].min()
 #max_atom = 42 #如果要用虚原子，则开启并设置max_atom
 # 定义Transformer嵌入网络
 class EmbedNet(nn.Module):
-    def __init__(self, input_size, embed_size, num_heads, num_layers, dropout_rate=dropout_value,n=10):
+    def __init__(self, input_size, embed_size, num_heads, num_layers, dropout_rate=dropout_value):
         self.cache = {}
         super(EmbedNet, self).__init__()
         # 输入嵌入层
@@ -153,7 +162,7 @@ class EmbedNet(nn.Module):
             irreps_in1="1x0e + 1x1o + 1x2e",           
             irreps_in2="1x0e + 1x1o + 1x2e", 
             irreps_out="1x0e + 1x1o + 1x2e + 1x3o", 
-            shared_weights=True,  # 是否共享权重
+            shared_weights=False,  # 是否共享权重
             internal_weights=True,  # 使用内部生成的权重
             normalization="component"  # 特征归一化方式，可选值 "component" 或 "norm"
         )
@@ -247,8 +256,8 @@ class EmbedNet(nn.Module):
         #S = self.mlp3(B)
         Y_combined = o3.spherical_harmonics(Y_sh, B*Z, True, normalization='component').to(device)
         A = self.tensor_product_3(G, Y_combined)
-        J = self.e3_conv_emb(A,Z)
-        I = self.e3_transformer(J,Z)
+        #J = self.e3_conv_emb(A,Z)
+        I = self.e3_transformer(A,Z)
         """
         AN = self.mlp5(A)
         AN = self.positional_encoding(AN)
@@ -417,17 +426,16 @@ class embE3Conv(nn.Module):
 
 # 定义主神经网络
 class E3Conv(nn.Module):
-    def __init__(self, max_radius, number_of_basis, irreps_input, irreps_output, hidden_dim=16):
+    def __init__(self, max_radius, number_of_basis, irreps_input_conv, irreps_output, hidden_dim):
         super(E3Conv, self).__init__()
         self.max_radius = max_radius
         self.number_of_basis = number_of_basis
-        self.irreps_input = o3.Irreps("10x0e + 10x1o")
         self.irreps_output = o3.Irreps(irreps_output)
         self.irreps_sh = o3.Irreps.spherical_harmonics(lmax=2)
         
         # 初始化 TensorProduct 和 FullyConnectedNet
         self.tp = o3.FullyConnectedTensorProduct(
-            self.irreps_input, self.irreps_sh, self.irreps_output, shared_weights=False
+            irreps_input_conv, self.irreps_sh, self.irreps_output, shared_weights=False
         )
         self.fc = e3nn_nn.FullyConnectedNet([number_of_basis, hidden_dim, self.tp.weight_numel], torch.nn.functional.silu)
 
@@ -494,8 +502,8 @@ class CustomDataset(Dataset):
         self.input_data = pd.read_hdf(input_file_path)
         self.read_data = pd.read_hdf(read_file_path)
         self.energy_df = pd.read_hdf(energy_file_path)
-        self.energy_max = self.energy_df['Energy'].max()
-        self.energy_min = self.energy_df['Energy'].min()
+        self.energy_max = energy_max
+        self.energy_min = energy_min
         self.energy_df['Transformed_Energy'] = (
             2 * (self.energy_df['Energy'] - self.energy_min) / (self.energy_max - self.energy_min) - 1
         )
@@ -603,11 +611,12 @@ main_net2 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidd
 main_net3 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
 main_net4 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
 main_net0 = MainNet2(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)#给虚原子的mainnet
-fit_net = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)#给权重函数的fit_net
-e3conv_layer = E3Conv(max_radius, number_of_basis, irreps_input, irreps_output, hidden_dim=emb_number).to(device)
+fit_net = MainNet2(input_size=42, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)#给权重函数的fit_net
+e3conv_layer = E3Conv(max_radius, number_of_basis, irreps_input_conv_main,irreps_output_conv_main, emb_number).to(device)
+e3conv_layer2 = E3Conv(max_radius, number_of_basis, irreps_input_conv_main_2,irreps_output_conv_main_2, emb_number).to(device)
 optimizer1 = torch.optim.AdamW(
     list(embed_net1.parameters()) + list(embed_net2.parameters()) + list(embed_net3.parameters()) + list(embed_net4.parameters()) + list(embed_net0.parameters()) +
-    list(main_net1.parameters()) + list(e3conv_layer.parameters()),
+    list(main_net1.parameters()) + list(e3conv_layer.parameters()) +list(e3conv_layer2.parameters()) +list(fit_net.parameters()) ,
     lr=learning_rate,weight_decay=0.01)
 #scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, mode='min', factor=0.1, patience=patience_opim)
 scheduler1 = torch.optim.lr_scheduler.StepLR(optimizer1, step_size=patience_opim, gamma=0.5)
@@ -697,14 +706,14 @@ for epoch in range(1, epoch_numbers + 1):
                 all_E.append(E)
             E_cat = all_E_tensor = torch.cat(all_E, dim=0)
             E_conv = e3conv_layer(E_cat,pos)
-            E_conv = E_conv.sum()
+            #E_conv = e3conv_layer2(E_conv,pos)
+            E_conv = E_conv.reshape(1,-1)
+            E_conv = fit_net(E_conv)
             E_conv.backward(retain_graph=True)
             fx_pred_conv = -pos.grad[:, 0]
             fy_pred_conv = -pos.grad[:, 1]
             fz_pred_conv = -pos.grad[:, 2]
             pos.grad.zero_()
-            print(E_conv)
-            #total_E_sum = sum(E_sums_per_molecule)
             print(f"Total E_sum for this molecule: {train_dataset.restore_energy(E_conv)}")
             E_sum_all.append(E_conv)
             #print(E_sum_all)
@@ -780,6 +789,9 @@ for epoch in range(1, epoch_numbers + 1):
                 all_E_val.append(E_val)           
             E_cat_val = all_E_tensor = torch.cat(all_E_val, dim=0)
             E_conv_val = e3conv_layer(E_cat_val,pos_val)
+            #E_conv_val = e3conv_layer2(E_conv_val,pos_val)
+            E_conv_val = E_conv_val.reshape(1,-1)
+            E_conv_val = fit_net(E_conv_val)
             E_conv_val = E_conv_val.sum()
             E_conv_val.backward(retain_graph=True)
             E_sum_all_val.append(E_conv_val) 
