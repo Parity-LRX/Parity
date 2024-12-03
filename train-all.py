@@ -23,7 +23,7 @@ torch.amp.autocast(device_type='cuda', enabled=True)
 max_atom = 20
 # 训练模型参数
 epoch_numbers = 100
-learning_rate = 0.00001
+learning_rate = 0.000001
 embed_size = 20
 num_heads = 4  # 多头注意力头数
 num_layers = 4  # Transformer层数
@@ -39,14 +39,14 @@ irreps_output_conv = o3.Irreps("1x0e + 1x1o + 1x2e")
 irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_query = o3.Irreps("5x0e + 5x1o")
 irreps_key = o3.Irreps("1x0e + 5x1o") 
-irreps_output = o3.Irreps("1x0e+ 1x1o") # 与v的不可约表示一致
+irreps_output = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o") # 与v的不可约表示一致
 irreps_sh_conv = o3.Irreps.spherical_harmonics(lmax=2)
-irreps_sh_transformer = o3.Irreps.spherical_harmonics(lmax=3)
+irreps_sh_transformer = o3.Irreps.spherical_harmonics(3)
 number_of_basis = 8 #e3nn中基函数的数量
 emb_number = 32
 max_radius = 6
 """mainnet中e3层参数"""
-irreps_input_conv_main = o3.Irreps(f"{max_atom}x0e+ {max_atom}x1o")
+irreps_input_conv_main = o3.Irreps(f"{max_atom}x0e+ {max_atom}x1o + {max_atom}x2e+{max_atom}x3o")
 irreps_output_conv_main = o3.Irreps("1x0e")
 irreps_input_conv_main_2 = irreps_output_conv_main
 irreps_output_conv_main_2 = o3.Irreps("1x0e")
@@ -63,7 +63,7 @@ a = 1 / 10
 b = 10
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
-batch_size = 16
+batch_size = 4
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
     def __init__(self):
@@ -79,7 +79,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 energy_df = pd.read_hdf("energy_train.h5")
 energy_max = energy_df['Energy'].max()
 energy_min = energy_df['Energy'].min()
-#max_atom = 42 #如果要用虚原子，则开启并设置max_atom
 # 定义Transformer嵌入网络
 class EmbedNet(nn.Module):
     def __init__(self, input_size, embed_size, num_heads, num_layers, dropout_rate=dropout_value):
@@ -142,22 +141,6 @@ class EmbedNet(nn.Module):
         self.q_linear_3 = nn.Linear(embed_size, embed_size)
         self.k_linear_3 = nn.Linear(embed_size, embed_size)
         self.v_linear_3 = nn.Linear(embed_size, embed_size)
-        self.tensor_product = o3.FullyConnectedTensorProduct(
-            irreps_in1="1x0e + 1x1o + 1x2e + 1x3o", # Y_combined 对应 l=0, l=1, l=2，包含 9 个分量
-            irreps_in2="1x0e + 1x1o + 1x2e + 1x3o", 
-            irreps_out = "1x0e + 1x1o + 1x2e + 1x3o + 1x1e + 1x2o + 1x3e ",  
-            shared_weights=True,  # 是否共享权重
-            internal_weights=True,  # 使用内部生成的权重
-            normalization="norm"  # 特征归一化方式，可选值 "component" 或 "norm"
-        )
-        self.tensor_product_2 = o3.FullyConnectedTensorProduct(
-            irreps_in1="1x0e",           
-            irreps_in2="1x0e + 1x1o + 1x2e",  
-            irreps_out="1x0e + 1x1o + 1x2e", 
-            shared_weights=True,  # 是否共享权重
-            internal_weights=True,  # 使用内部生成的权重
-            normalization="component"  # 特征归一化方式，可选值 "component" 或 "norm"
-        )
         self.tensor_product_3 = o3.FullyConnectedTensorProduct(
             irreps_in1="1x0e + 1x1o + 1x2e",           
             irreps_in2="1x0e + 1x1o + 1x2e", 
@@ -166,33 +149,12 @@ class EmbedNet(nn.Module):
             internal_weights=True,  # 使用内部生成的权重
             normalization="component"  # 特征归一化方式，可选值 "component" 或 "norm"
         )
-        self.tp = o3.FullyConnectedTensorProduct(irreps_input_conv, irreps_sh_conv, irreps_output_conv, shared_weights=False).to(device)
-        self.fc = e3nn_nn.FullyConnectedNet([number_of_basis, emb_number, self.tp.weight_numel], torch.nn.functional.silu).to(device)
         self.h_q = o3.Linear(irreps_input, irreps_query).to(device)
-        self.tp_k = o3.FullyConnectedTensorProduct(irreps_input, o3.Irreps.spherical_harmonics(3), irreps_key, shared_weights=False).to(device)
+        self.tp_k = o3.FullyConnectedTensorProduct(irreps_input, irreps_sh_transformer, irreps_key, shared_weights=False).to(device)
         self.fc_k = e3nn_nn.FullyConnectedNet([number_of_basis, emb_number, self.tp_k.weight_numel], act=torch.nn.functional.silu).to(device)
-        self.tp_v = o3.FullyConnectedTensorProduct(irreps_input, o3.Irreps.spherical_harmonics(3), irreps_output, shared_weights=False).to(device)
+        self.tp_v = o3.FullyConnectedTensorProduct(irreps_input, irreps_sh_transformer, irreps_output, shared_weights=False).to(device)
         self.fc_v = e3nn_nn.FullyConnectedNet([number_of_basis, emb_number, self.tp_v.weight_numel], act=torch.nn.functional.silu).to(device)
         self.dot = o3.FullyConnectedTensorProduct(irreps_query, irreps_key, "0e").to(device)
-    def e3_conv(self,f_in, pos):
-        origin = torch.zeros_like(pos[0]).to(device)  # 中心原子坐标
-        # 构造 edge_src 和 edge_dst
-        edge_src = torch.zeros(pos.shape[0], dtype=torch.long).to(device)  # 中心原子索引 0
-        edge_dst = torch.arange(0, pos.shape[0], dtype=torch.long).to(device)  # 邻域原子索引
-        edge_vec = (pos - origin.unsqueeze(0))  # (N, 3)
-        num_neighbors = len(edge_src) / max_atom
-        tp = o3.FullyConnectedTensorProduct(irreps_input_conv, irreps_sh_conv, irreps_output_conv, shared_weights=False).to(device)
-        fc = e3nn_nn.FullyConnectedNet([number_of_basis, emb_number, tp.weight_numel], torch.nn.functional.silu).to(device)
-        sh = o3.spherical_harmonics(irreps_sh_conv, edge_vec, normalize=True, normalization='component').to(device)
-        edge_length = edge_vec.norm(dim=1)
-        edge_length_embedded = soft_one_hot_linspace(
-            edge_length, 
-            0.0, 
-            max_radius, 
-            number_of_basis, 
-            basis='gaussian', 
-            cutoff=True).mul(number_of_basis**0.5).to(device)
-        return scatter(self.tp(f_in[edge_src], sh, fc(edge_length_embedded)), edge_dst, dim=0, dim_size=max_atom).div(num_neighbors**0.5).to(device)
     def e3_transformer(self, f, pos):
         origin = torch.zeros_like(pos[0]).to(device)  # 中心原子坐标
         # 构造 edge_src 和 edge_dst
@@ -221,17 +183,35 @@ class EmbedNet(nn.Module):
             cutoff=True).to(device)
         edge_length_embedded = edge_length_embedded.mul(number_of_basis**0.5)
         edge_weight_cutoff = soft_unit_step(10 * (1 - edge_length / max_radius))
+        batch_norm = e3nn_nn.BatchNorm(irreps=irreps_input).to(device)
         #fc_k = e3nn_nn.FullyConnectedNet([number_of_basis, 8, self.tp_k.weight_numel], act=torch.nn.functional.silu).to(device)
         #fc_v = e3nn_nn.FullyConnectedNet([number_of_basis, 8, self.tp_v.weight_numel], act=torch.nn.functional.silu).to(device)
-        q = self.h_q(f)
-        k = self.tp_k(f[edge_src], edge_sh, self.fc_k(edge_length_embedded))
-        v = self.tp_v(f[edge_src], edge_sh, self.fc_v(edge_length_embedded))
+        """"
+        #多层注意力，非常影响计算速度，需要输出的不可约表示与输入的一致
         for _ in range(num_layers):
+            q = self.h_q(f)
+            k = self.tp_k(f[edge_src], edge_sh, self.fc_k(edge_length_embedded))
+            v = self.tp_v(f[edge_src], edge_sh, self.fc_v(edge_length_embedded))
             exp = edge_weight_cutoff[:, None] * self.dot(q[edge_dst], k).exp()
             z = scatter(exp, edge_dst, dim=0, dim_size=len(f))
             z[z == 0] = 1
             alpha = exp / z[edge_dst]
+            f_new = scatter(alpha.relu().sqrt() * v, edge_dst, dim=0, dim_size=len(f)).to(device)
+            # 残差连接
+            f = f + f_new 
+            batch_norm = e3nn_nn.BatchNorm(irreps=irreps_input).to(device)
+            f = batch_norm(f)
+        return f
+        """
+        q = self.h_q(f)
+        k = self.tp_k(f[edge_src], edge_sh, self.fc_k(edge_length_embedded))
+        v = self.tp_v(f[edge_src], edge_sh, self.fc_v(edge_length_embedded))
+        exp = edge_weight_cutoff[:, None] * self.dot(q[edge_dst], k).exp()
+        z = scatter(exp, edge_dst, dim=0, dim_size=len(f))
+        z[z == 0] = 1
+        alpha = exp / z[edge_dst]
         return scatter(alpha.relu().sqrt() * v, edge_dst, dim=0, dim_size=len(f)).to(device)
+        
     def forward(self, R):
         # 进行 One-Hot 编码
         #R5_one_hot = F.one_hot(R[:, 4].long(), num_classes=128).float()
@@ -458,6 +438,48 @@ class E3Conv(nn.Module):
             dim_size=num_nodes
         ).div(num_neighbors**0.5)
         return out
+class E3_TransformerLayer(nn.Module):
+    def __init__(self, max_radius, number_of_basis, irreps_input,irreps_query, irreps_key,irreps_output, irreps_sh, hidden_dim):
+        super(E3_TransformerLayer,self).__init__()
+        self.irreps_sh = irreps_sh
+        #self.irreps_input =irreps_input
+        #self.irreps_query = irreps_query
+       # self.irreps_key = irreps_key
+        #self.irreps_output = irreps_output
+        #self.irreps_sh = irreps_sh
+        self.max_radius = max_radius
+        self.number_of_basis = number_of_basis
+        self.h_q = o3.Linear(irreps_input, irreps_query)
+        self.tp_k = o3.FullyConnectedTensorProduct(irreps_input, irreps_sh, irreps_key, shared_weights=False)
+        self.tp_v = o3.FullyConnectedTensorProduct(irreps_input, irreps_sh, irreps_output, shared_weights=False)
+        self.fc_k = e3nn_nn.FullyConnectedNet([number_of_basis, hidden_dim, self.tp_k.weight_numel], torch.nn.functional.silu)
+        self.fc_v = e3nn_nn.FullyConnectedNet([number_of_basis, hidden_dim, self.tp_v.weight_numel], torch.nn.functional.silu)
+        self.dot = o3.FullyConnectedTensorProduct(irreps_query, irreps_key, "0e").to(device)
+    def forward(self, f, pos):
+        edge_src, edge_dst = radius_graph(pos, max_radius)
+        edge_vec = pos[edge_src] - pos[edge_dst]
+        edge_length = edge_vec.norm(dim=1)
+        edge_length_embedded = soft_one_hot_linspace(
+            edge_length,
+            start=0.0,
+            end=self.max_radius,
+            number=self.number_of_basis,
+            basis='smooth_finite',
+            cutoff=True
+        ).mul(self.number_of_basis**0.5)
+        edge_weight_cutoff = soft_unit_step(10 * (1 - edge_length / self.max_radius))
+        # 计算球谐函数
+        edge_sh = o3.spherical_harmonics(self.irreps_sh, edge_vec, True, normalization='component')
+        # 计算 q, k, 
+        q = self.h_q(f)
+        k = self.tp_k(f[edge_src], edge_sh, self.fc_k(edge_length_embedded))
+        v = self.tp_v(f[edge_src], edge_sh, self.fc_v(edge_length_embedded))
+        for _ in range(num_layers):
+            exp = edge_weight_cutoff[:, None] * self.dot(q[edge_dst], k).exp()
+            z = scatter(exp, edge_dst, dim=0, dim_size=len(f))
+            z[z == 0] = 1
+            alpha = exp / z[edge_dst]
+        return scatter(alpha.relu().sqrt() * v, edge_dst, dim=0, dim_size=len(f))
 class MainNet(nn.Module):
     def __init__(self, input_size, hidden_sizes, dropout_rate=dropout_value):
         super(MainNet, self).__init__()
@@ -614,9 +636,10 @@ main_net0 = MainNet2(input_size=embed_size * embed_size*4, hidden_sizes=main_hid
 fit_net = MainNet2(input_size=42, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)#给权重函数的fit_net
 e3conv_layer = E3Conv(max_radius, number_of_basis, irreps_input_conv_main,irreps_output_conv_main, emb_number).to(device)
 e3conv_layer2 = E3Conv(max_radius, number_of_basis, irreps_input_conv_main_2,irreps_output_conv_main_2, emb_number).to(device)
+e3trans = E3_TransformerLayer(max_radius, number_of_basis, irreps_input_conv_main, irreps_query, irreps_key, irreps_output_conv_main, irreps_sh_transformer, emb_number).to(device)
 optimizer1 = torch.optim.AdamW(
     list(embed_net1.parameters()) + list(embed_net2.parameters()) + list(embed_net3.parameters()) + list(embed_net4.parameters()) + list(embed_net0.parameters()) +
-    list(main_net1.parameters()) + list(e3conv_layer.parameters()) +list(e3conv_layer2.parameters()) +list(fit_net.parameters()) ,
+    list(main_net1.parameters()) + list(e3conv_layer.parameters()) +list(e3conv_layer2.parameters()) +list(fit_net.parameters()) + list(e3trans.parameters()),
     lr=learning_rate,weight_decay=0.01)
 #scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, mode='min', factor=0.1, patience=patience_opim)
 scheduler1 = torch.optim.lr_scheduler.StepLR(optimizer1, step_size=patience_opim, gamma=0.5)
@@ -631,7 +654,7 @@ if os.path.exists(checkpoint_path):
     embed_net4.load_state_dict(checkpoint['embed_net4_state_dict'])
     embed_net0.load_state_dict(checkpoint['embed_net0_state_dict'])
     #main_net1.load_state_dict(checkpoint['main_net1'])
-    #fit_net.load_state_dict(checkpoint['fit_net_state_dict'])
+    fit_net.load_state_dict(checkpoint['fit_net_state_dict'])
     e3conv_layer.load_state_dict(checkpoint['e3conv_layer_state_dict'])
     optimizer1.load_state_dict(checkpoint['optimizer1_state_dict'])
     scheduler1.load_state_dict(checkpoint["scheduler_state_dict"])
@@ -705,10 +728,10 @@ for epoch in range(1, epoch_numbers + 1):
                 E = compute_E(R, embed_value)
                 all_E.append(E)
             E_cat = all_E_tensor = torch.cat(all_E, dim=0)
-            E_conv = e3conv_layer(E_cat,pos)
+            E_conv = e3trans(E_cat,pos).sum()
             #E_conv = e3conv_layer2(E_conv,pos)
-            E_conv = E_conv.reshape(1,-1)
-            E_conv = fit_net(E_conv)
+            #E_conv = E_conv.reshape(1,-1)
+            #E_conv = fit_net(E_conv)
             E_conv.backward(retain_graph=True)
             fx_pred_conv = -pos.grad[:, 0]
             fy_pred_conv = -pos.grad[:, 1]
