@@ -23,13 +23,10 @@ torch.amp.autocast(device_type='cuda', enabled=True)
 max_atom = 20
 # 训练模型参数
 epoch_numbers = 100
-learning_rate = 0.000001
+learning_rate = 0.0001
 embed_size = 20
 num_heads = 4  # 多头注意力头数
 num_layers = 4  # Transformer层数
-main_hidden_sizes1 = [100,100]
-main_hidden_sizes2 = [100,100]
-main_hidden_sizes3 = [32]
 input_size_value = 6 #R的维度
 invariant = 0.5
 equivariant = 1 - invariant
@@ -38,18 +35,26 @@ irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_output_conv = o3.Irreps("1x0e + 1x1o + 1x2e")
 irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_query = o3.Irreps("5x0e + 5x1o")
-irreps_key = o3.Irreps("1x0e + 5x1o") 
-irreps_output = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o") # 与v的不可约表示一致
+irreps_key = o3.Irreps("5x0e + 5x1o") 
+irreps_output = o3.Irreps("5x0e") # 与v的不可约表示一致
 irreps_sh_conv = o3.Irreps.spherical_harmonics(lmax=2)
-irreps_sh_transformer = o3.Irreps.spherical_harmonics(3)
-number_of_basis = 8 #e3nn中基函数的数量
-emb_number = 32
+irreps_sh_transformer = o3.Irreps.spherical_harmonics(lmax=2)
+number_of_basis = 4 #e3nn中基函数的数量
+emb_number = 16
 max_radius = 6
 """mainnet中e3层参数"""
-irreps_input_conv_main = o3.Irreps(f"{max_atom}x0e+ {max_atom}x1o + {max_atom}x2e+{max_atom}x3o")
-irreps_output_conv_main = o3.Irreps("1x0e")
+irreps_input_conv_main = o3.Irreps(f"{max_atom * 5}x0e")
+irreps_output_conv_main = o3.Irreps(f"{max_atom * 5}x0e + {max_atom * 5}x1o")
 irreps_input_conv_main_2 = irreps_output_conv_main
-irreps_output_conv_main_2 = o3.Irreps("1x0e")
+irreps_output_conv_main_2 = o3.Irreps("10x0e")
+emb_number_main = 64
+max_radius_main = 8
+number_of_basis_main = 8
+main_hidden_sizes1 = [100,100]
+main_hidden_sizes2 = [100,100]
+main_hidden_sizes3 = [4]
+main_hidden_sizes4 = 40
+input_dim_weight = 10 #要和卷积层
 
 patience_opim = 10
 patience = 10  # 早停参数
@@ -59,8 +64,8 @@ energy_shift_value = 1
 energy_shift_value2 = 0
 force_shift_value = 1
 #a和b分别是energy_loss和force_loss的初始系数，update_param是这俩参数更新频率，n个batch更新一次
-a = 1 / 10
-b = 10
+a = 1
+b = 100
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
 batch_size = 4
@@ -391,7 +396,6 @@ class embE3Conv(nn.Module):
         edge_dst = torch.arange(0, pos.shape[0], dtype=torch.long).to(device)  # 邻域原子索引
         edge_vec = (pos - origin.unsqueeze(0))  # (N, 3)
         num_neighbors = len(edge_src) / self.max_atom
-
         sh = o3.spherical_harmonics(self.irreps_sh_conv, edge_vec, normalize=True, normalization='component')
         edge_length = edge_vec.norm(dim=1)
         edge_length_embedded = soft_one_hot_linspace(
@@ -401,7 +405,6 @@ class embE3Conv(nn.Module):
             self.number_of_basis, 
             basis='gaussian', 
             cutoff=True).mul(self.number_of_basis ** 0.5).to(device)
-
         return scatter(self.tp(f_in[edge_src], sh, self.fc(edge_length_embedded)), edge_dst, dim=0, dim_size=self.max_atom).div(num_neighbors ** 0.5).to(device)
 
 # 定义主神经网络
@@ -429,8 +432,8 @@ class E3Conv(nn.Module):
         emb = soft_one_hot_linspace(
             edge_vec.norm(dim=1), 0.0, self.max_radius, self.number_of_basis, basis='gaussian', cutoff=True
         ).mul(self.number_of_basis**0.5)
+        print(emb.shape)
 
-        # 应用 TensorProduct 和 FullyConnectedNet
         out = scatter(
             self.tp(f_in[edge_src], sh, self.fc(emb)),
             edge_dst,
@@ -442,11 +445,6 @@ class E3_TransformerLayer(nn.Module):
     def __init__(self, max_radius, number_of_basis, irreps_input,irreps_query, irreps_key,irreps_output, irreps_sh, hidden_dim):
         super(E3_TransformerLayer,self).__init__()
         self.irreps_sh = irreps_sh
-        #self.irreps_input =irreps_input
-        #self.irreps_query = irreps_query
-       # self.irreps_key = irreps_key
-        #self.irreps_output = irreps_output
-        #self.irreps_sh = irreps_sh
         self.max_radius = max_radius
         self.number_of_basis = number_of_basis
         self.h_q = o3.Linear(irreps_input, irreps_query)
@@ -470,15 +468,14 @@ class E3_TransformerLayer(nn.Module):
         edge_weight_cutoff = soft_unit_step(10 * (1 - edge_length / self.max_radius))
         # 计算球谐函数
         edge_sh = o3.spherical_harmonics(self.irreps_sh, edge_vec, True, normalization='component')
-        # 计算 q, k, 
+        # 计算 q, k, 如果需要开启多层transformer，则参考embedded net里面equitransformer模块里面的用法，但是输出和输入的不可约表示必须要一致
         q = self.h_q(f)
         k = self.tp_k(f[edge_src], edge_sh, self.fc_k(edge_length_embedded))
         v = self.tp_v(f[edge_src], edge_sh, self.fc_v(edge_length_embedded))
-        for _ in range(num_layers):
-            exp = edge_weight_cutoff[:, None] * self.dot(q[edge_dst], k).exp()
-            z = scatter(exp, edge_dst, dim=0, dim_size=len(f))
-            z[z == 0] = 1
-            alpha = exp / z[edge_dst]
+        exp = edge_weight_cutoff[:, None] * self.dot(q[edge_dst], k).exp()
+        z = scatter(exp, edge_dst, dim=0, dim_size=len(f))
+        z[z == 0] = 1
+        alpha = exp / z[edge_dst]
         return scatter(alpha.relu().sqrt() * v, edge_dst, dim=0, dim_size=len(f))
 class MainNet(nn.Module):
     def __init__(self, input_size, hidden_sizes, dropout_rate=dropout_value):
@@ -519,6 +516,64 @@ class MainNet2(nn.Module):
             x = self.dropout(x)
         Y = self.output(x)
         return Y
+class WeightedDynamicMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout_prob=dropout_value):
+        super(WeightedDynamicMLP, self).__init__()
+        
+        # 共享的特征提取 MLP（对每个特征）
+        self.input_dim = input_dim
+        self.feature_mlp = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),  # 输入单个特征
+            nn.Tanh(),
+            nn.Dropout(p=dropout_prob),  # 添加 Dropout
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh()
+        )
+        
+        # 用于计算权重的 MLP（对每个特征）
+        self.weight_mlp = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Dropout(p=dropout_prob),  # 添加 Dropout
+            nn.Linear(hidden_dim, 1)  # 输出权重
+        )
+        
+        # 最终输出映射
+        self.final_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Dropout(p=dropout_prob),  # 添加 Dropout
+            nn.Linear(hidden_dim, output_dim)
+        )
+
+    def forward(self, x):
+        """
+            x (torch.Tensor): 输入张量，形状为 (1, n), 输入是动态变化的。
+            torch.Tensor: 输出标量，形状为 (1, 1)。
+        """
+        # 获取输入特征数量 n
+        n = x.size(1)
+        
+        # 展平输入，将 (1, n) 转换为 (n, 1)
+        x = x.view(-1, self.input_dim)
+        
+        # 提取特征：对每个输入特征共享 MLP
+        features = self.feature_mlp(x)  # 输出 (n, hidden_dim)
+        
+        # 计算权重：对每个输入特征共享权重网络
+        raw_weights = self.weight_mlp(x)  # 输出 (n, 1)
+        
+        # 动态调整 Softmax：根据输入维度 n 调整权重
+        #weights = F.softmax(raw_weights, dim=0)  # 使用维度调整
+        weights = F.tanh(raw_weights)  # 使用维度调整
+        # 聚合：特征加权求和
+        global_feature = (weights * features).sum(dim=0, keepdim=True)  # 输出 (1, hidden_dim)
+        
+        # 最终输出：通过 MLP 映射到标量
+        output = self.final_mlp(global_feature)  # 输出 (1, 1)
+        
+        return output
+#加载数据
 class CustomDataset(Dataset):
     def __init__(self, input_file_path, read_file_path, energy_file_path):
         self.input_data = pd.read_hdf(input_file_path)
@@ -634,12 +689,13 @@ main_net3 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidd
 main_net4 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
 main_net0 = MainNet2(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)#给虚原子的mainnet
 fit_net = MainNet2(input_size=42, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)#给权重函数的fit_net
-e3conv_layer = E3Conv(max_radius, number_of_basis, irreps_input_conv_main,irreps_output_conv_main, emb_number).to(device)
-e3conv_layer2 = E3Conv(max_radius, number_of_basis, irreps_input_conv_main_2,irreps_output_conv_main_2, emb_number).to(device)
-e3trans = E3_TransformerLayer(max_radius, number_of_basis, irreps_input_conv_main, irreps_query, irreps_key, irreps_output_conv_main, irreps_sh_transformer, emb_number).to(device)
+model = WeightedDynamicMLP(input_dim_weight, main_hidden_sizes4, 1,dropout_prob=dropout_value).to(device)
+e3conv_layer = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main,irreps_output_conv_main, emb_number_main).to(device)
+e3conv_layer2 = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main_2,irreps_output_conv_main_2, emb_number_main).to(device)
+e3trans = E3_TransformerLayer(max_radius_main, number_of_basis_main, irreps_input_conv_main, irreps_query, irreps_key, irreps_output_conv_main, irreps_sh_transformer, emb_number_main).to(device)
 optimizer1 = torch.optim.AdamW(
     list(embed_net1.parameters()) + list(embed_net2.parameters()) + list(embed_net3.parameters()) + list(embed_net4.parameters()) + list(embed_net0.parameters()) +
-    list(main_net1.parameters()) + list(e3conv_layer.parameters()) +list(e3conv_layer2.parameters()) +list(fit_net.parameters()) + list(e3trans.parameters()),
+    list(main_net1.parameters()) + list(e3conv_layer.parameters()) +list(e3conv_layer2.parameters()) +list(model.parameters()) + list(e3trans.parameters()),
     lr=learning_rate,weight_decay=0.01)
 #scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, mode='min', factor=0.1, patience=patience_opim)
 scheduler1 = torch.optim.lr_scheduler.StepLR(optimizer1, step_size=patience_opim, gamma=0.5)
@@ -728,10 +784,10 @@ for epoch in range(1, epoch_numbers + 1):
                 E = compute_E(R, embed_value)
                 all_E.append(E)
             E_cat = all_E_tensor = torch.cat(all_E, dim=0)
-            E_conv = e3trans(E_cat,pos).sum()
-            #E_conv = e3conv_layer2(E_conv,pos)
-            #E_conv = E_conv.reshape(1,-1)
-            #E_conv = fit_net(E_conv)
+            E_conv = e3conv_layer(E_cat,pos)
+            E_conv = e3conv_layer2(E_conv,pos)
+            E_conv = E_conv.reshape(1,-1)
+            E_conv = model(E_conv)
             E_conv.backward(retain_graph=True)
             fx_pred_conv = -pos.grad[:, 0]
             fy_pred_conv = -pos.grad[:, 1]
@@ -812,13 +868,12 @@ for epoch in range(1, epoch_numbers + 1):
                 all_E_val.append(E_val)           
             E_cat_val = all_E_tensor = torch.cat(all_E_val, dim=0)
             E_conv_val = e3conv_layer(E_cat_val,pos_val)
-            #E_conv_val = e3conv_layer2(E_conv_val,pos_val)
+            E_conv_val = e3conv_layer2(E_conv_val,pos_val)
             E_conv_val = E_conv_val.reshape(1,-1)
-            E_conv_val = fit_net(E_conv_val)
-            E_conv_val = E_conv_val.sum()
+            E_conv_val = model(E_conv_val)
             E_conv_val.backward(retain_graph=True)
             E_sum_all_val.append(E_conv_val) 
-            print(f"Total E_sum_val for this molecule: {val_dataset.restore_energy(E_conv_val)}")
+            print(f"Total E_sum_val for this molecule: {val_dataset.restore_energy(E_conv_val.item())}")
             fx_pred_conv_val = -pos_val.grad[:, 0]
             fy_pred_conv_val = -pos_val.grad[:, 1]
             fz_pred_conv_val = -pos_val.grad[:, 2]
