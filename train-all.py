@@ -34,41 +34,43 @@ equivariant = 1 - invariant
 irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_output_conv = o3.Irreps("1x0e + 1x1o + 1x2e")
 irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
-irreps_query = o3.Irreps("5x0e + 5x1o")
-irreps_key = o3.Irreps("5x0e + 5x1o") 
-irreps_output = o3.Irreps("5x0e") # 与v的不可约表示一致
+irreps_query = o3.Irreps("5x0e + 5x1o + 5x2e")
+irreps_key = o3.Irreps("5x0e + 5x1o + 5x2e") 
+irreps_output = o3.Irreps("5x0e + 5x1e ") # 与v的不可约表示一致
 irreps_sh_conv = o3.Irreps.spherical_harmonics(lmax=2)
 irreps_sh_transformer = o3.Irreps.spherical_harmonics(lmax=2)
 number_of_basis = 4 #e3nn中基函数的数量
 emb_number = 16
 max_radius = 6
 """mainnet中e3层参数"""
-irreps_input_conv_main = o3.Irreps(f"{max_atom * 5}x0e")
-irreps_output_conv_main = o3.Irreps(f"{max_atom * 5}x0e + {max_atom * 5}x1o")
+irreps_input_conv_main = o3.Irreps(f"{max_atom * 5}x0e + {max_atom * 5}x1o")
+irreps_output_conv_main = o3.Irreps(f"{max_atom * 5}x0e ")
 irreps_input_conv_main_2 = irreps_output_conv_main
 irreps_output_conv_main_2 = o3.Irreps("10x0e")
-emb_number_main = 64
-max_radius_main = 8
+emb_number_main = [128]
+emb_number_main_2 = [128]
+max_radius_main = 10
 number_of_basis_main = 8
 main_hidden_sizes1 = [100,100]
 main_hidden_sizes2 = [100,100]
 main_hidden_sizes3 = [4]
-main_hidden_sizes4 = 40
-input_dim_weight = 10 #要和卷积层
+main_hidden_sizes4 = 64
+input_dim_weight = 10 #要和卷积层输出通道数一致
+dropout_value = 0.2
 
 patience_opim = 10
 patience = 10  # 早停参数
-dropout_value = 0.4
+
 #定义一个映射，E_trans = E/energy_shift_value + energy_shift_value2
 energy_shift_value = 1
 energy_shift_value2 = 0
 force_shift_value = 1
 #a和b分别是energy_loss和force_loss的初始系数，update_param是这俩参数更新频率，n个batch更新一次
 a = 1
-b = 100
+b = 10
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
-batch_size = 4
+batch_size = 32
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
     def __init__(self):
@@ -415,12 +417,15 @@ class E3Conv(nn.Module):
         self.number_of_basis = number_of_basis
         self.irreps_output = o3.Irreps(irreps_output)
         self.irreps_sh = o3.Irreps.spherical_harmonics(lmax=2)
-        
+        num_hidden_layers =4
         # 初始化 TensorProduct 和 FullyConnectedNet
         self.tp = o3.FullyConnectedTensorProduct(
             irreps_input_conv, self.irreps_sh, self.irreps_output, shared_weights=False
         )
-        self.fc = e3nn_nn.FullyConnectedNet([number_of_basis, hidden_dim, self.tp.weight_numel], torch.nn.functional.silu)
+        self.fc = e3nn_nn.FullyConnectedNet(
+            [number_of_basis] + hidden_dim + [self.tp.weight_numel],
+            torch.nn.functional.silu
+        )
 
     def forward(self, f_in, pos):
         edge_src, edge_dst = radius_graph(pos, self.max_radius, max_num_neighbors=len(pos) - 1)
@@ -432,7 +437,6 @@ class E3Conv(nn.Module):
         emb = soft_one_hot_linspace(
             edge_vec.norm(dim=1), 0.0, self.max_radius, self.number_of_basis, basis='gaussian', cutoff=True
         ).mul(self.number_of_basis**0.5)
-        print(emb.shape)
 
         out = scatter(
             self.tp(f_in[edge_src], sh, self.fc(emb)),
@@ -450,8 +454,8 @@ class E3_TransformerLayer(nn.Module):
         self.h_q = o3.Linear(irreps_input, irreps_query)
         self.tp_k = o3.FullyConnectedTensorProduct(irreps_input, irreps_sh, irreps_key, shared_weights=False)
         self.tp_v = o3.FullyConnectedTensorProduct(irreps_input, irreps_sh, irreps_output, shared_weights=False)
-        self.fc_k = e3nn_nn.FullyConnectedNet([number_of_basis, hidden_dim, self.tp_k.weight_numel], torch.nn.functional.silu)
-        self.fc_v = e3nn_nn.FullyConnectedNet([number_of_basis, hidden_dim, self.tp_v.weight_numel], torch.nn.functional.silu)
+        self.fc_k = e3nn_nn.FullyConnectedNet([number_of_basis] + hidden_dim + [self.tp_k.weight_numel], torch.nn.functional.silu)
+        self.fc_v = e3nn_nn.FullyConnectedNet([number_of_basis] + hidden_dim + [self.tp_v.weight_numel], torch.nn.functional.silu)
         self.dot = o3.FullyConnectedTensorProduct(irreps_query, irreps_key, "0e").to(device)
     def forward(self, f, pos):
         edge_src, edge_dst = radius_graph(pos, max_radius)
@@ -547,10 +551,6 @@ class WeightedDynamicMLP(nn.Module):
         )
 
     def forward(self, x):
-        """
-            x (torch.Tensor): 输入张量，形状为 (1, n), 输入是动态变化的。
-            torch.Tensor: 输出标量，形状为 (1, 1)。
-        """
         # 获取输入特征数量 n
         n = x.size(1)
         
@@ -667,12 +667,14 @@ def compute_E(R, embed_value):
         6: embed_net2,
         7: embed_net3,
         8: embed_net4}.get(embed_value, embed_net0)
+    """
     main_net = {
         0: main_net0,
         1: main_net1,
         6: main_net1,
         7: main_net1,
         8: main_net1} .get(embed_value, main_net0)
+    """
     T = compute_T(embed_net, R)
     #M = compute_M(T)
     E = T.view(1,-1)
@@ -683,22 +685,29 @@ embed_net2 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_he
 embed_net3 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
 embed_net4 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
 embed_net0 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
-main_net1 = MainNet(input_size=10*max_atom , hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
-main_net2 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
-main_net3 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
-main_net4 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
-main_net0 = MainNet2(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)#给虚原子的mainnet
-fit_net = MainNet2(input_size=42, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)#给权重函数的fit_net
+#main_net1 = MainNet(input_size=10*max_atom , hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
+#main_net2 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
+#main_net3 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
+#main_net4 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
+#main_net0 = MainNet2(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)#给虚原子的mainnet
+#fit_net = MainNet2(input_size=42, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)#给权重函数的fit_net
 model = WeightedDynamicMLP(input_dim_weight, main_hidden_sizes4, 1,dropout_prob=dropout_value).to(device)
-e3conv_layer = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main,irreps_output_conv_main, emb_number_main).to(device)
-e3conv_layer2 = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main_2,irreps_output_conv_main_2, emb_number_main).to(device)
-e3trans = E3_TransformerLayer(max_radius_main, number_of_basis_main, irreps_input_conv_main, irreps_query, irreps_key, irreps_output_conv_main, irreps_sh_transformer, emb_number_main).to(device)
+e3conv_layer = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main,irreps_output_conv_main, hidden_dim=emb_number_main).to(device)
+e3conv_layer2 = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main_2,irreps_output_conv_main_2, hidden_dim=emb_number_main_2).to(device)
+#e3trans = E3_TransformerLayer(max_radius_main, number_of_basis_main, irreps_input_conv_main, irreps_query, irreps_key, irreps_output_conv_main, irreps_sh_transformer, emb_number_main).to(device)
 optimizer1 = torch.optim.AdamW(
-    list(embed_net1.parameters()) + list(embed_net2.parameters()) + list(embed_net3.parameters()) + list(embed_net4.parameters()) + list(embed_net0.parameters()) +
-    list(main_net1.parameters()) + list(e3conv_layer.parameters()) +list(e3conv_layer2.parameters()) +list(model.parameters()) + list(e3trans.parameters()),
+    list(embed_net1.parameters()) 
+    + list(embed_net2.parameters()) 
+    + list(embed_net3.parameters()) 
+    + list(embed_net4.parameters()) 
+    + list(embed_net0.parameters())
+    + list(e3conv_layer.parameters()) 
+    + list(e3conv_layer2.parameters()) 
+    + list(model.parameters()) 
+    ,
     lr=learning_rate,weight_decay=0.01)
 #scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, mode='min', factor=0.1, patience=patience_opim)
-scheduler1 = torch.optim.lr_scheduler.StepLR(optimizer1, step_size=patience_opim, gamma=0.5)
+scheduler1 = torch.optim.lr_scheduler.StepLR(optimizer1, step_size=patience_opim, gamma=0.1)
 
 # 检查是否存在之前保存的模型文件
 checkpoint_path = 'combined_model.pth'
@@ -710,8 +719,9 @@ if os.path.exists(checkpoint_path):
     embed_net4.load_state_dict(checkpoint['embed_net4_state_dict'])
     embed_net0.load_state_dict(checkpoint['embed_net0_state_dict'])
     #main_net1.load_state_dict(checkpoint['main_net1'])
-    fit_net.load_state_dict(checkpoint['fit_net_state_dict'])
+    model.load_state_dict(checkpoint['model_state_dict'])
     e3conv_layer.load_state_dict(checkpoint['e3conv_layer_state_dict'])
+    e3conv_layer2.load_state_dict(checkpoint['e3conv_layer2_state_dict'])
     optimizer1.load_state_dict(checkpoint['optimizer1_state_dict'])
     scheduler1.load_state_dict(checkpoint["scheduler_state_dict"])
     #a = checkpoint["a"]
@@ -734,7 +744,7 @@ for epoch in range(1, epoch_numbers + 1):
     epoch_energy_loss = 0.0
     epoch_force_loss = 0.0
     all_nets = [embed_net0, embed_net1, embed_net2, embed_net3, embed_net4,
-            main_net0, main_net1, main_net2, main_net3, main_net4]
+            e3conv_layer,e3conv_layer2,model]
     all_parameters = [param for net in all_nets for param in net.parameters()]
     for batch_idx, batch in enumerate(train_loader):
         start_time_batch = time.time()
@@ -812,7 +822,7 @@ for epoch in range(1, epoch_numbers + 1):
         E_sum_tensor = torch.tensor(E_sum_all, device=device,requires_grad=True).view(-1)
         #print(E_sum_all)
         energy_loss = criterion(E_sum_tensor, target_energies)
-        energy_rmse = train_dataset.restore_force(criterion_2(E_sum_tensor, target_energies))
+        energy_rmse = train_dataset.restore_force(criterion_2(E_sum_tensor, target_energies) / len(dimensions))
         batch_energy_loss += energy_loss.item()
         total_loss = (a * energy_loss + b * force_loss)
         total_loss.backward()
@@ -833,11 +843,8 @@ for epoch in range(1, epoch_numbers + 1):
         embed_net4.eval()
         embed_net0.eval()
         e3conv_layer.eval()
-        main_net1.eval()
-        main_net2.eval()
-        main_net3.eval()
-        main_net4.eval()
-        main_net0.eval()
+        e3conv_layer2.eval()
+        model.eval()
         #with torch.no_grad():
         E_sum_all_val = []
         for input_tensor, read_tensor, target_energy in val_blocks:  # 使用预加载的数据
@@ -890,9 +897,9 @@ for epoch in range(1, epoch_numbers + 1):
             criterion_2(fx_pred_conv_batch_val, fy_ref_val) +
             criterion_2(fx_pred_conv_batch_val, fz_ref_val)) / 3 / len(dimensions))
         E_sum_val_tensor = torch.tensor(E_sum_all_val, device=device,requires_grad=True).view(-1)
-        energy_loss_val = val_dataset.restore_force(criterion_2(E_sum_tensor, target_energies))
+        energy_loss_val = val_dataset.restore_force(criterion_2(E_sum_tensor, target_energies)/ len(dimensions))
         total_energy_loss_val = energy_loss_val.item()
-        total_force_loss_val = force_loss.item()
+        total_force_loss_val = force_loss_val.item()
         total_val_loss1 = (total_energy_loss_val + total_force_loss_val)
         print(f"""Epoch {epoch}/{epoch_numbers},
             Total Loss _val: {total_val_loss1},
@@ -926,11 +933,8 @@ for epoch in range(1, epoch_numbers + 1):
         embed_net4.train()
         embed_net0.train()
         e3conv_layer.train()
-        main_net1.train()
-        main_net2.train()
-        main_net3.train()
-        main_net4.train()
-        main_net0.train()
+        e3conv_layer2.train()
+        model.train()
             # 每 n个 epoch 保存一次模型
         if batch_count % 1 == 0:
             torch.save({
@@ -939,9 +943,9 @@ for epoch in range(1, epoch_numbers + 1):
                 'embed_net3_state_dict': embed_net3.state_dict(),
                 'embed_net4_state_dict': embed_net4.state_dict(),
                 'embed_net0_state_dict': embed_net0.state_dict(),
-                'main_net1_state_dict': main_net1.state_dict(),
-                'fit_net_state_dict': fit_net.state_dict(),
+                'model_state_dict': model.state_dict(),
                 'e3conv_layer_state_dict': e3conv_layer.state_dict(),
+                'e3conv_layer2_state_dict': e3conv_layer2.state_dict(),
                 'optimizer1_state_dict': optimizer1.state_dict(),
                 "scheduler_state_dict": scheduler1.state_dict(),
                 "a": a, 
@@ -962,6 +966,8 @@ for epoch in range(1, epoch_numbers + 1):
     end_time_epoch = time.time()
     epoch_energy_loss += batch_energy_loss
     epoch_force_loss += batch_force_loss
+    loss_out_df = pd.DataFrame(loss_out)
+    loss_out_df.to_csv(f'epoch_{epoch}_batch_count_{batch_count}_loss.csv', index=False)
     print(f"Epoch {epoch} completed in {end_time_epoch - start_time_epoch:.2f} seconds. "
           f"Total Energy Loss: {epoch_energy_loss:.4f}, Total Force Loss: {epoch_force_loss:.4f}")
 """""
@@ -990,8 +996,9 @@ torch.save({
         'embed_net3_state_dict': embed_net3.state_dict(),
         'embed_net4_state_dict': embed_net4.state_dict(),
         'embed_net0_state_dict': embed_net0.state_dict(),
-        'fit_net_state_dict': fit_net.state_dict(),
+        'model_state_dict': model.state_dict(),
         'e3conv_layer_state_dict': e3conv_layer.state_dict(),
+        'e3conv_layer2_state_dict': e3conv_layer2.state_dict(),
         'optimizer1_state_dict': optimizer1.state_dict(),
         "scheduler_state_dict": scheduler1.state_dict(),
         "a": a, 
