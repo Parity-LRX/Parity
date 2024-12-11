@@ -23,51 +23,51 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message=".*TorchScript.*")
 torch.autograd.set_detect_anomaly(True)
 torch.amp.autocast(device_type='cuda', enabled=True)
-max_atom = 5
+max_atom = 10
 # 训练模型参数
 epoch_numbers = 100
-learning_rate = 0.0001
-embed_size = 12
+learning_rate = 0.00001
+embed_size = 32
 num_heads = 4  # 多头注意力头数
 num_layers = 4  # Transformer层数
 input_size_value = 6 #R的维度
 invariant = 0.5
 equivariant = 1 - invariant
-main_hidden_sizes1 = [12]
-main_hidden_sizes2 = [100,100]
+main_hidden_sizes1 = [4]
+main_hidden_sizes2 = [16,8]
 main_hidden_sizes3 = [4]
 """embnet中e3层参数"""
 irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_output_conv = o3.Irreps("10x0e + 10x1o + 10x2e")
 irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
-irreps_query = o3.Irreps("5x0e + 5x1o")
-irreps_key = o3.Irreps("5x0e + 5x1o") 
+irreps_query = o3.Irreps("10x0e + 10x1o")
+irreps_key = o3.Irreps("10x0e + 10x1o") 
 irreps_output = o3.Irreps("10x0e + 10x1o + 10x2e") # 与v的不可约表示一致
 irreps_sh_conv = o3.Irreps.spherical_harmonics(lmax=2)
 irreps_sh_transformer = o3.Irreps.spherical_harmonics(lmax=2)
 number_of_basis = 4 #e3nn中基函数的数量
-emb_number = [64,64]
-max_radius = 4
+emb_number = [64,128,64]
+max_radius = 8
 """mainnet中e3层参数"""
-embedding_value = 450 #irreps_input_conv_main的维度
+embedding_value = 900 #irreps_input_conv_main的维度
 irreps_input_conv_main = o3.Irreps(f"{max_atom * 10}x0e + {max_atom * 10}x1o + {max_atom * 10}x2e")
-irreps_output_conv_main = o3.Irreps(f"{max_atom * 5}x0e ")
+irreps_output_conv_main = o3.Irreps(f"{max_atom * 5}x0e + {max_atom * 10}x1o + {max_atom * 10}x2e")
 irreps_input_conv_main_2 = irreps_output_conv_main
-irreps_output_conv_main_2 = o3.Irreps("20x0e")
+irreps_output_conv_main_2 = o3.Irreps("50x0e")
 irreps_query_main = o3.Irreps("5x0e + 5x1o")
 irreps_key_main = o3.Irreps("5x0e + 5x1o")
-hidden_dim_sh = o3.Irreps("5x0e")
+hidden_dim_sh = o3.Irreps("10x0e")
 emb_number_main = [64,64]
-emb_number_main_2 = [32]
-max_radius_main = 5
+emb_number_main_2 = [64,128]
+max_radius_main = 15
 number_of_basis_main = 10
 
 
 main_hidden_sizes4 = [4]
 input_dim_weight = 1 #要和卷积层输出通道数一致
-dropout_value = 0.3
+dropout_value = 0
 
-patience_opim = 20
+patience_opim = 50
 patience = 10  # 早停参数
 
 #定义一个映射，E_trans = E/energy_shift_value + energy_shift_value2
@@ -79,7 +79,7 @@ a = 1
 b = 100
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
-batch_size = 16
+batch_size = 32
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
     def __init__(self):
@@ -102,21 +102,30 @@ class EmbedNet(nn.Module):
         self.cache = {}
         super(EmbedNet, self).__init__()
         # 输入嵌入层
-        self.embedding = nn.Linear(input_size, embed_size)
+        #self.embedding = nn.Linear(input_size, embed_size)
         # 位置编码：使用预计算位置编码的方式
-        self.positional_encoding = PositionalEncoding(embed_size, dropout_rate)
+        #self.positional_encoding = PositionalEncoding(embed_size, dropout_rate)
         # 多个 Transformer 编码层，每个编码层都包含自注意力和前馈网络
         self.encoder_layers = nn.ModuleList([TransformerEncoderLayer(embed_size, num_heads, dropout_rate) for _ in range(num_layers)])
         self.fitnet = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)
         self.fitnet_2 = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)
-        self.fitnet_3 = MainNet(input_size=3, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
+        self.fitnet_3 = MainNet2(input_size=3, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
         self.s_attention = MultiHeadAttention(embed_size, num_heads, num_layers, dropout_rate)
         self.e3_conv_emb = embE3Conv(max_atom, number_of_basis, max_radius, irreps_input_conv, irreps_sh_conv, irreps_output_conv)
         # MLP 层用于生成各种相同维度的矩阵
         self.mlp = nn.Sequential(
             nn.Linear(3, embed_size),
             nn.SiLU(),
-            nn.Linear(embed_size, embed_size) )
+            nn.Linear(embed_size, 3) )
+        self.one_hot_mlp = nn.Sequential(
+            nn.Linear(10, embed_size),
+            nn.SiLU(),
+            nn.Linear(embed_size, 1))
+        self.one_hot_mlp_2 = nn.Sequential(
+            nn.Linear(10, embed_size),
+            nn.SiLU(),
+            nn.Linear(embed_size, 1))
+        """
         self.mlp2 = nn.Sequential(
             nn.Linear(3, embed_size),
             nn.Tanh(),
@@ -142,14 +151,7 @@ class EmbedNet(nn.Module):
             nn.Tanh(),
             nn.Dropout(dropout_rate),
             nn.Linear(embed_size * 4, embed_size))
-        self.one_hot_mlp = nn.Sequential(
-            nn.Linear(10, embed_size),
-            nn.Tanh(),
-            nn.Linear(embed_size, 1))
-        self.one_hot_mlp_2 = nn.Sequential(
-            nn.Linear(10, embed_size),
-            nn.Tanh(),
-            nn.Linear(embed_size, 1))
+
         # 定义线性变换层，用于生成 Q, K 和 V
         self.q_linear_1 = nn.Linear(embed_size, embed_size)
         self.k_linear_1 = nn.Linear(embed_size, embed_size)
@@ -160,6 +162,7 @@ class EmbedNet(nn.Module):
         self.q_linear_3 = nn.Linear(embed_size, embed_size)
         self.k_linear_3 = nn.Linear(embed_size, embed_size)
         self.v_linear_3 = nn.Linear(embed_size, embed_size)
+        """
         self.tensor_product_3 = o3.FullyConnectedTensorProduct(
             irreps_in1="1x0e + 1x1o + 1x2e",           
             irreps_in2="1x0e + 1x1o + 1x2e", 
@@ -189,7 +192,7 @@ class EmbedNet(nn.Module):
             0.0,
             max_radius,
             number=number_of_basis,
-            basis='smooth_finite',
+            basis='gaussian',
             cutoff=True).to(device)
         edge_length_embedded = edge_length_embedded.mul(number_of_basis**0.5)
         edge_weight_cutoff = soft_unit_step(10 * (1 - edge_length / max_radius))
@@ -226,21 +229,21 @@ class EmbedNet(nn.Module):
         # 进行 One-Hot 编码
         R5_one_hot = F.one_hot(R[:, 4].long(), num_classes=10).to(torch.float64)
         O = self.one_hot_mlp(R5_one_hot)  # 使用 MLP 对 One-Hot 编码进行处理
-        #O = self.fitnet(O)
+        O = self.fitnet(O)
         R6_one_hot = F.one_hot(R[:, 5].long(), num_classes=10).to(torch.float64)
         B = self.one_hot_mlp_2(R6_one_hot)  # 使用 MLP 对 One-Hot 编码进行处理
-        #B = self.fitnet_2(B)
+        B = self.fitnet_2(B)
         Y_sh = o3.Irreps.spherical_harmonics(lmax=2)
         K = R[:, 0]  # 第1列
         K = K.unsqueeze(-1)
         G = torch.cat([K,O,B], dim=-1)
-        G = self.fitnet_3(G)  # 经过 MLP 生成 G
+        G = self.mlp(G)  # 经过 MLP 生成 G
         G = o3.spherical_harmonics(Y_sh, G, normalize=True, normalization='norm').to(device)
         Z = R[:, 1:4]  # 取第2, 3, 4列作为 Z 
         #H = self.mlp2(Z)
         #Si = R[:,[0]]
         #S = self.mlp3(B)
-        Y_combined = o3.spherical_harmonics(Y_sh, Z, True, normalization='norm').to(device)
+        Y_combined = o3.spherical_harmonics(Y_sh, Z, True, normalization='component').to(device)
         A = self.tensor_product_3(G, Y_combined)
         J = self.e3_conv_emb(A,Z)
         #I = self.e3_transformer(A,Z)
@@ -404,7 +407,7 @@ class embE3Conv(nn.Module):
             0.0, 
             self.max_radius, 
             self.number_of_basis, 
-            basis='smooth_finite', 
+            basis='gaussian', 
             cutoff=True).mul(self.number_of_basis ** 0.5).to(device)
         return scatter(self.tp(f_in[edge_src], sh, self.fc(edge_length_embedded)), edge_dst, dim=0, dim_size=self.max_atom).div(num_neighbors ** 0.5).to(device)
 
@@ -433,7 +436,7 @@ class E3Conv(nn.Module):
         # 计算球谐函数和基函数
         sh = o3.spherical_harmonics(self.irreps_sh, edge_vec, normalize=True, normalization='component')
         emb = soft_one_hot_linspace(
-            edge_vec.norm(dim=1), 0.0, self.max_radius, self.number_of_basis, basis='smooth_finite', cutoff=True
+            edge_vec.norm(dim=1), 0.0, self.max_radius, self.number_of_basis, basis='gaussian', cutoff=True
         ).mul(self.number_of_basis**0.5)
 
         out = scatter(
@@ -467,7 +470,7 @@ class E3_TransformerLayer(nn.Module):
             start=0.0,
             end=self.max_radius,
             number=self.number_of_basis,
-            basis='smooth_finite',
+            basis='gaussian',
             cutoff=True
         ).mul(self.number_of_basis**0.5)
         edge_weight_cutoff = soft_unit_step(10 * (1 - edge_length / self.max_radius))
@@ -480,7 +483,7 @@ class E3_TransformerLayer(nn.Module):
         exp = edge_weight_cutoff[:, None] * self.dot(q[edge_dst], k).exp()
         z = scatter(exp, edge_dst, dim=0, dim_size=len(f))
         z[z == 0] = 1
-        alpha = (exp / z[edge_dst]).clamp(min=1e-10)
+        alpha = (exp / z[edge_dst])
         f_new = scatter(alpha.relu().sqrt() * v, edge_dst, dim=0, dim_size=len(f))
         f_new = self.linear_layer(f_new)
         f_new = self.non_linearity(f_new)
@@ -497,13 +500,13 @@ class MainNet(nn.Module):
             self.layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i + 1]))
             self.layer_norms.append(nn.LayerNorm(hidden_sizes[i + 1]))
         # 输出层
-        self.output = nn.Linear(hidden_sizes[-1], 3)
+        self.output = nn.Linear(hidden_sizes[-1], 1)
         self.dropout = nn.Dropout(dropout_rate)
     def forward(self, M):
         x = M
         for layer, ln in zip(self.layers, self.layer_norms):
             x = layer(x)
-            x = F.silu(x)
+            x = F.tanh(x)
             x = ln(x)  # 使用 LayerNorm
             x = self.dropout(x)
         Y = self.output(x)
@@ -563,7 +566,7 @@ class WeightedDynamicMLP(nn.Module):
             #in_dim = hidden_dim
         for hidden_dim in hidden_dims:
             feature_layers.append(nn.Linear(in_dim, hidden_dim))  # 不使用残差
-            feature_layers.append(nn.Tanh())  # 激活函数
+            feature_layers.append(nn.SiLU())  # 激活函数
             feature_layers.append(nn.Dropout(p=dropout_prob))  # Dropout
             in_dim = hidden_dim
         self.feature_mlp = nn.Sequential(*feature_layers)
@@ -598,8 +601,8 @@ class WeightedDynamicMLP(nn.Module):
         raw_weights = self.weight_mlp(x)  # 输出 (n, 1)
         
         # 动态调整 Softmax：根据输入维度 n 调整权重
-        #weights = F.softmax(raw_weights * (n ** 2), dim=0)  # 使用维度调整
-        weights = F.silu(raw_weights)  # 使用 tanh 进行调整
+        weights = F.softmax(raw_weights * (n ** 0.5), dim=0)  # 使用维度调整
+        #weights = F.silu(raw_weights)  # 使用 tanh 进行调整
         
         # 聚合：特征加权求和
         global_feature = (weights * features).sum(dim=0, keepdim=True)  # 输出 (1, hidden_dim)
@@ -674,7 +677,7 @@ val_blocks = [
     (input_tensor.to(device), read_tensor.to(device), target_energy.to(device))
     for input_tensor, read_tensor, target_energy in [val_dataset[i] for i in range(len(val_dataset))]]
 # 设置验证集比例，假设选择20%的数据作为验证集
-validation_size = int(1 * len(val_blocks))
+validation_size = int(0.2 * len(val_blocks))
 
 # 随机选择验证集索引
 random.shuffle(val_blocks)  # 打乱数据顺序
@@ -729,7 +732,7 @@ embed_net0 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_he
 #main_net4 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
 #main_net0 = MainNet2(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)#给虚原子的mainnet
 #fit_net = MainNet2(input_size=42, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)#给权重函数的fit_net
-model = WeightedDynamicMLP(input_dim_weight, main_hidden_sizes4, 1,dropout_prob=0).to(device)
+model = MainNet(input_size= 41 , hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)
 e3conv_layer = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main,irreps_output_conv_main, hidden_dim=emb_number_main).to(device)
 e3conv_layer2 = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main_2,irreps_output_conv_main_2, hidden_dim=emb_number_main_2).to(device)
 e3trans = E3_TransformerLayer(max_radius_main, number_of_basis_main, irreps_input_conv_main, irreps_query_main, irreps_key_main, irreps_output_conv_main_2, irreps_sh_transformer, hidden_dim_sh, emb_number_main_2).to(device)
@@ -744,7 +747,7 @@ optimizer1 = torch.optim.AdamW(
     + list(e3trans.parameters())
     + list(model.parameters()) 
     ,
-    lr=learning_rate,weight_decay=1e-5)
+    lr=learning_rate,weight_decay=1e-8)
 #scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, mode='min', factor=0.1, patience=patience_opim)
 scheduler1 = torch.optim.lr_scheduler.StepLR(optimizer1, step_size=patience_opim, gamma=0.1)
 
@@ -851,16 +854,16 @@ for epoch in range(1, epoch_numbers + 1):
                 # 进行后续的计算
                 # E_conv = e3conv_layer(E_cat, pos)
                 E_conv = e3trans(E_cat, pos)
-                #E_conv = E_conv.reshape(1,-1)
-                #E_conv = model(E_conv)
+                E_conv = E_conv.reshape(1,-1)
+                E_conv = model(E_conv)
                 #E_total = E_conv.sum()
-                E_mean = E_conv.mean()
+                E_mean = E_conv
                 E_mean.backward(retain_graph=True)
                 fx_pred_conv = train_dataset.restore_force(-pos.grad[:, 0])
                 fy_pred_conv = train_dataset.restore_force(-pos.grad[:, 1])
                 fz_pred_conv = train_dataset.restore_force(-pos.grad[:, 2])
                 end_time_it = time.time()
-                pos.grad.zero_()
+                #pos.grad.zero_()
                 print(f"Total E_mean for this molecule: {train_dataset.restore_energy(E_mean)}")
                 E_sum_all.append(E_mean)
                 #print(E_sum_all)
@@ -947,10 +950,10 @@ for epoch in range(1, epoch_numbers + 1):
                 # 进行后续计算
                 # E_conv_val = e3conv_layer(E_cat_val, pos_val)
                 E_conv_val = e3trans(E_cat_val, pos_val)
-                #E_conv_val = E_conv_val.reshape(1,-1)
-                #E_conv_val = model(E_conv_val)
+                E_conv_val = E_conv_val.reshape(1,-1)
+                E_conv_val = model(E_conv_val)
                 #E_total_val = E_conv_val.sum()
-                E_mean_val = E_conv_val.mean()
+                E_mean_val = E_conv_val
                 E_mean_val.backward(retain_graph=True)
                 E_sum_all_val.append(E_mean_val)
                 target_E_all_val.append(target_energy)
