@@ -12,6 +12,7 @@ from e3nn import o3
 from e3nn import nn as e3nn_nn
 from e3nn.o3 import Irreps, spherical_harmonics, TensorProduct,FullyConnectedTensorProduct
 from e3nn.math import soft_one_hot_linspace, soft_unit_step
+from e3nn.nn import Gate
 import math
 import time
 import os
@@ -27,7 +28,7 @@ max_atom = 10
 # 训练模型参数
 epoch_numbers = 100
 learning_rate = 0.00001
-embed_size = 32
+embed_size = 32 #G矩阵的MLP隐藏层
 num_heads = 4  # 多头注意力头数
 num_layers = 4  # Transformer层数
 input_size_value = 6 #R的维度
@@ -35,7 +36,7 @@ invariant = 0.5
 equivariant = 1 - invariant
 main_hidden_sizes1 = [4]
 main_hidden_sizes2 = [16,8]
-main_hidden_sizes3 = [4]
+main_hidden_sizes3 = [4] #one-hot编码后MLP隐藏层
 """embnet中e3层参数"""
 irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_output_conv = o3.Irreps("10x0e + 10x1o + 10x2e")
@@ -46,7 +47,7 @@ irreps_output = o3.Irreps("10x0e + 10x1o + 10x2e") # 与v的不可约表示一�
 irreps_sh_conv = o3.Irreps.spherical_harmonics(lmax=2)
 irreps_sh_transformer = o3.Irreps.spherical_harmonics(lmax=2)
 number_of_basis = 4 #e3nn中基函数的数量
-emb_number = [64,128,64]
+emb_number = [64,64] #嵌入网络e3MLP最好和主网络e3MLP隐藏层大小一致，层数多一层
 max_radius = 8
 """mainnet中e3层参数"""
 embedding_value = 900 #irreps_input_conv_main的维度
@@ -58,28 +59,29 @@ irreps_query_main = o3.Irreps("5x0e + 5x1o")
 irreps_key_main = o3.Irreps("5x0e + 5x1o")
 hidden_dim_sh = o3.Irreps("10x0e")
 emb_number_main = [64,64]
-emb_number_main_2 = [64,128]
-max_radius_main = 15
+emb_number_main_2 = [64]
+max_radius_main = 30
 number_of_basis_main = 10
 
 
 main_hidden_sizes4 = [4]
 input_dim_weight = 1 #要和卷积层输出通道数一致
-dropout_value = 0
+dropout_value = 0.5
 
-patience_opim = 50
+patience_opim = 30
 patience = 10  # 早停参数
 
 #定义一个映射，E_trans = E/energy_shift_value + energy_shift_value2
 energy_shift_value = 1
 energy_shift_value2 = 0
 force_shift_value = 1
+force_coefficient = 1
 #a和b分别是energy_loss和force_loss的初始系数，update_param是这俩参数更新频率，n个batch更新一次
 a = 1
 b = 100
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
-batch_size = 32
+batch_size = 16
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
     def __init__(self):
@@ -88,6 +90,7 @@ class RMSELoss(torch.nn.Module):
     def forward(self, y_pred, y_true):
         return torch.sqrt(self.mse(y_pred, y_true))
 criterion_2 = RMSELoss()
+#criterion = nn.SmoothL1Loss(beta=0.5)
 criterion = nn.MSELoss()
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -110,8 +113,8 @@ class EmbedNet(nn.Module):
         self.fitnet = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)
         self.fitnet_2 = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)
         self.fitnet_3 = MainNet2(input_size=3, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
-        self.s_attention = MultiHeadAttention(embed_size, num_heads, num_layers, dropout_rate)
-        self.e3_conv_emb = embE3Conv(max_atom, number_of_basis, max_radius, irreps_input_conv, irreps_sh_conv, irreps_output_conv)
+        self.s_attention = MultiHeadAttention(embed_size, num_heads, num_layers, dropout_rate).to(device)
+        self.e3_conv_emb = embE3Conv(max_atom, number_of_basis, max_radius, irreps_input_conv, irreps_sh_conv, irreps_output_conv).to(device)
         # MLP 层用于生成各种相同维度的矩阵
         self.mlp = nn.Sequential(
             nn.Linear(3, embed_size),
@@ -125,6 +128,14 @@ class EmbedNet(nn.Module):
             nn.Linear(10, embed_size),
             nn.SiLU(),
             nn.Linear(embed_size, 1))
+        # 定义 Gate 模块，使用 SiLU 激活
+        self.gate = Gate(
+            irreps_scalars="3x0e",  # 对应标量 K, O, B
+            act_scalars=[torch.nn.functional.silu],  # 对标量特征使用 SiLU
+            irreps_gates="2x0e",  # 门控特征
+            act_gates=[torch.sigmoid],  # 对门控特征使用 Sigmoid
+            irreps_gated="1x1e+1x1o"  # 假设使用偶向量和奇向量作为 gated 特征
+        ).to(device)
         """
         self.mlp2 = nn.Sequential(
             nn.Linear(3, embed_size),
@@ -238,6 +249,7 @@ class EmbedNet(nn.Module):
         K = K.unsqueeze(-1)
         G = torch.cat([K,O,B], dim=-1)
         G = self.mlp(G)  # 经过 MLP 生成 G
+        #G = self.gate(G)
         G = o3.spherical_harmonics(Y_sh, G, normalize=True, normalization='norm').to(device)
         Z = R[:, 1:4]  # 取第2, 3, 4列作为 Z 
         #H = self.mlp2(Z)
@@ -506,7 +518,7 @@ class MainNet(nn.Module):
         x = M
         for layer, ln in zip(self.layers, self.layer_norms):
             x = layer(x)
-            x = F.tanh(x)
+            x = F.silu(x)
             x = ln(x)  # 使用 LayerNorm
             x = self.dropout(x)
         Y = self.output(x)
@@ -566,7 +578,7 @@ class WeightedDynamicMLP(nn.Module):
             #in_dim = hidden_dim
         for hidden_dim in hidden_dims:
             feature_layers.append(nn.Linear(in_dim, hidden_dim))  # 不使用残差
-            feature_layers.append(nn.SiLU())  # 激活函数
+            feature_layers.append(nn.Tanh())  # 激活函数
             feature_layers.append(nn.Dropout(p=dropout_prob))  # Dropout
             in_dim = hidden_dim
         self.feature_mlp = nn.Sequential(*feature_layers)
@@ -601,7 +613,7 @@ class WeightedDynamicMLP(nn.Module):
         raw_weights = self.weight_mlp(x)  # 输出 (n, 1)
         
         # 动态调整 Softmax：根据输入维度 n 调整权重
-        weights = F.softmax(raw_weights * (n ** 0.5), dim=0)  # 使用维度调整
+        weights = F.softmax(raw_weights * (n ** 0), dim=0)  # 使用维度调整
         #weights = F.silu(raw_weights)  # 使用 tanh 进行调整
         
         # 聚合：特征加权求和
@@ -667,12 +679,12 @@ class CustomDataset(Dataset):
         target_energy = torch.tensor(self.energy_df['Transformed_Energy'].iloc[idx], dtype=torch.float64, device=device)
         return input_tensor, read_tensor, target_energy
     # 加载数据集
-train_dataset = CustomDataset('train-fix.h5', 'read_train.h5', 'energy_train.h5')#如果不删除贡献为0的原子，则用train.h5，下同
+train_dataset = CustomDataset('train-fix.h5', 'read_train.h5', 'energy_train.h5')
 val_dataset = CustomDataset('val-fix.h5', 'read_val.h5', 'energy_val.h5')
 # 数据集块数量
 print(f"Train dataset has {len(train_dataset)} blocks.")#确认trainset的数量
 print(f"Validation dataset has {len(val_dataset)} blocks.")
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, collate_fn=lambda x: x)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=lambda x: x)
 val_blocks = [
     (input_tensor.to(device), read_tensor.to(device), target_energy.to(device))
     for input_tensor, read_tensor, target_energy in [val_dataset[i] for i in range(len(val_dataset))]]
@@ -732,7 +744,8 @@ embed_net0 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_he
 #main_net4 = MainNet(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes1, dropout_rate=dropout_value).to(device)
 #main_net0 = MainNet2(input_size=embed_size * embed_size*4, hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)#给虚原子的mainnet
 #fit_net = MainNet2(input_size=42, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_value).to(device)#给权重函数的fit_net
-model = MainNet(input_size= 41 , hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)
+#model = MainNet(input_size= 41 , hidden_sizes=main_hidden_sizes2, dropout_rate=dropout_value).to(device)
+model = WeightedDynamicMLP(input_dim_weight, main_hidden_sizes4, 1,dropout_prob=0).to(device)
 e3conv_layer = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main,irreps_output_conv_main, hidden_dim=emb_number_main).to(device)
 e3conv_layer2 = E3Conv(max_radius_main, number_of_basis_main, irreps_input_conv_main_2,irreps_output_conv_main_2, hidden_dim=emb_number_main_2).to(device)
 e3trans = E3_TransformerLayer(max_radius_main, number_of_basis_main, irreps_input_conv_main, irreps_query_main, irreps_key_main, irreps_output_conv_main_2, irreps_sh_transformer, hidden_dim_sh, emb_number_main_2).to(device)
@@ -749,7 +762,7 @@ optimizer1 = torch.optim.AdamW(
     ,
     lr=learning_rate,weight_decay=1e-8)
 #scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer1, mode='min', factor=0.1, patience=patience_opim)
-scheduler1 = torch.optim.lr_scheduler.StepLR(optimizer1, step_size=patience_opim, gamma=0.1)
+scheduler1 = torch.optim.lr_scheduler.StepLR(optimizer1, step_size=patience_opim, gamma=0.5)
 
 # 检查是否存在之前保存的模型文件
 checkpoint_path = 'combined_model.pth'
@@ -853,17 +866,17 @@ for epoch in range(1, epoch_numbers + 1):
 
                 # 进行后续的计算
                 # E_conv = e3conv_layer(E_cat, pos)
-                E_conv = e3trans(E_cat, pos)
-                E_conv = E_conv.reshape(1,-1)
-                E_conv = model(E_conv)
+                E_conv = e3trans(E_cat, pos).mean()
+                #E_conv = E_conv.reshape(1,-1)
+                #E_conv = model(E_conv)
                 #E_total = E_conv.sum()
                 E_mean = E_conv
                 E_mean.backward(retain_graph=True)
-                fx_pred_conv = train_dataset.restore_force(-pos.grad[:, 0])
-                fy_pred_conv = train_dataset.restore_force(-pos.grad[:, 1])
-                fz_pred_conv = train_dataset.restore_force(-pos.grad[:, 2])
+                fx_pred_conv = train_dataset.restore_force(-pos.grad[:, 0]) / force_coefficient
+                fy_pred_conv = train_dataset.restore_force(-pos.grad[:, 1]) / force_coefficient 
+                fz_pred_conv = train_dataset.restore_force(-pos.grad[:, 2]) / force_coefficient 
                 end_time_it = time.time()
-                #pos.grad.zero_()
+                pos.grad.zero_()
                 print(f"Total E_mean for this molecule: {train_dataset.restore_energy(E_mean)}")
                 E_sum_all.append(E_mean)
                 #print(E_sum_all)
@@ -949,18 +962,18 @@ for epoch in range(1, epoch_numbers + 1):
                 E_cat_val  = all_E_val
                 # 进行后续计算
                 # E_conv_val = e3conv_layer(E_cat_val, pos_val)
-                E_conv_val = e3trans(E_cat_val, pos_val)
-                E_conv_val = E_conv_val.reshape(1,-1)
-                E_conv_val = model(E_conv_val)
+                E_conv_val = e3trans(E_cat_val, pos_val).mean()
+                #E_conv_val = E_conv_val.reshape(1,-1)
+                #E_conv_val = model(E_conv_val)
                 #E_total_val = E_conv_val.sum()
                 E_mean_val = E_conv_val
                 E_mean_val.backward(retain_graph=True)
                 E_sum_all_val.append(E_mean_val)
                 target_E_all_val.append(target_energy)
                 print(f"Total E_sum_val for this molecule: {val_dataset.restore_energy(E_mean_val.item())}")
-                fx_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 0])
-                fy_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 1])
-                fz_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 2])
+                fx_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 0]) / force_coefficient
+                fy_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 1]) / force_coefficient
+                fz_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 2]) / force_coefficient
 
                 fx_pred_conv_batch_val = fx_pred_conv_val.to(device).view(-1)
                 fy_pred_conv_batch_val = fy_pred_conv_val.to(device).view(-1)
@@ -995,23 +1008,14 @@ for epoch in range(1, epoch_numbers + 1):
                     "force_rmse_val": total_force_loss_val,
                     "learning_rate1": current_lr1[0]
                 })
-        # 早停机制
-        if total_loss < best_val_loss:
-            best_val_loss = total_loss
-            patience_counter = 0  
-        else:
-            patience_counter += 1 
-        if patience_counter >= patience:
-            print(f"Early stopping triggered at epoch {epoch}.")
-            break 
-        embed_net1.train()
-        embed_net2.train()
-        embed_net3.train()
-        embed_net4.train()
-        embed_net0.train()
-        e3conv_layer.train()
-        e3conv_layer2.train()
-        model.train()
+            embed_net1.train()
+            embed_net2.train()
+            embed_net3.train()
+            embed_net4.train()
+            embed_net0.train()
+            e3conv_layer.train()
+            e3conv_layer2.train()
+            model.train()
             # 每 n个 epoch 保存一次模型
         if batch_count % 1 == 0:
             torch.save({
@@ -1032,9 +1036,9 @@ for epoch in range(1, epoch_numbers + 1):
             print(f"Model saved at batch_count {batch_count} as 'combined_model_batch_count_{batch_count}.pth'.")
             loss_out_df = pd.DataFrame(loss_out)
             loss_out_df.to_csv(f'epoch_{epoch}_batch_count_{batch_count}_loss.csv', index=False)
-    # 早停机制
-    if total_val_loss1 < best_val_loss:
-        best_val_loss = total_val_loss1
+                # 早停机制
+    if total_loss < best_val_loss:
+        best_val_loss = total_loss
         patience_counter = 0  
     else:
         patience_counter += 1 
@@ -1042,12 +1046,12 @@ for epoch in range(1, epoch_numbers + 1):
         print(f"Early stopping triggered at epoch {epoch}.")
         break 
     end_time_epoch = time.time()
-    epoch_energy_loss += batch_energy_loss
-    epoch_force_loss += batch_force_loss
+    epoch_energy_loss += batch_energy_loss / (batch_idx + 1)
+    epoch_force_loss += batch_force_loss / (batch_idx + 1)
     loss_out_df = pd.DataFrame(loss_out)
     loss_out_df.to_csv(f'epoch_{epoch}_batch_count_{batch_count}_loss.csv', index=False)
     print(f"Epoch {epoch} completed in {end_time_epoch - start_time_epoch:.2f} seconds. "
-          f"Total Energy Loss: {epoch_energy_loss:.4f}, Total Force Loss: {epoch_force_loss:.4f}")
+        f"Total Energy Loss: {epoch_energy_loss:.4f}, Total Force Loss: {epoch_force_loss:.4f}")
 """""
     # 嵌入网络输入
     dummy_input_embed = torch.randn(41, 5, device=device)
