@@ -27,7 +27,7 @@ torch.amp.autocast(device_type='cuda', enabled=True)
 max_atom = 10
 # 训练模型参数
 epoch_numbers = 100
-learning_rate = 0.00001
+learning_rate = 0.0001
 embed_size = 32 #G矩阵的MLP隐藏层
 num_heads = 4  # 多头注意力头数
 num_layers = 4  # Transformer层数
@@ -66,7 +66,7 @@ number_of_basis_main = 10
 
 main_hidden_sizes4 = [4]
 input_dim_weight = 1 #要和卷积层输出通道数一致
-dropout_value = 0.1
+dropout_value = 0
 
 patience_opim = 30
 patience = 10  # 早停参数
@@ -195,7 +195,7 @@ class EmbedNet(nn.Module):
         edge_src = torch.zeros(pos.shape[0], dtype=torch.long).to(device)  # 中心原子索引 0
         edge_dst = torch.arange(0, pos.shape[0], dtype=torch.long).to(device)  # 邻域原子索引
         edge_vec = (pos - origin.unsqueeze(0)).to(device)  # (N, 3)
-        edge_sh = o3.spherical_harmonics(irreps_sh_transformer, edge_vec, True, normalization='component').to(device)
+        edge_sh = o3.spherical_harmonics(irreps_sh_transformer, edge_vec, True, normalization='norm').to(device)
         # 计算边长
         edge_length = edge_vec.norm(dim=1)  # 每条边的长度
         edge_length_embedded = soft_one_hot_linspace(
@@ -250,7 +250,7 @@ class EmbedNet(nn.Module):
         G = torch.cat([K,O,B], dim=-1)
         G = self.mlp(G)  # 经过 MLP 生成 G
         #G = self.gate(G)
-        G = o3.spherical_harmonics(Y_sh, G, normalize=True, normalization='norm').to(device)
+        G = o3.spherical_harmonics(Y_sh, G, normalize=True, normalization='component').to(device)
         Z = R[:, 1:4]  # 取第2, 3, 4列作为 Z 
         #H = self.mlp2(Z)
         #Si = R[:,[0]]
@@ -412,7 +412,7 @@ class embE3Conv(nn.Module):
         edge_dst = torch.arange(0, pos.shape[0], dtype=torch.long).to(device)  # 邻域原子索引
         edge_vec = (pos - origin.unsqueeze(0))  # (N, 3)
         num_neighbors = len(edge_src) / self.max_atom
-        sh = o3.spherical_harmonics(self.irreps_sh_conv, edge_vec, normalize=True, normalization='component')
+        sh = o3.spherical_harmonics(self.irreps_sh_conv, edge_vec, normalize=True, normalization='norm')
         edge_length = edge_vec.norm(dim=1)
         edge_length_embedded = soft_one_hot_linspace(
             edge_length, 
@@ -446,7 +446,7 @@ class E3Conv(nn.Module):
         num_nodes = pos.size(0)
         num_neighbors = len(edge_src) / num_nodes
         # 计算球谐函数和基函数
-        sh = o3.spherical_harmonics(self.irreps_sh, edge_vec, normalize=True, normalization='component')
+        sh = o3.spherical_harmonics(self.irreps_sh, edge_vec, normalize=True, normalization='norm')
         emb = soft_one_hot_linspace(
             edge_vec.norm(dim=1), 0.0, self.max_radius, self.number_of_basis, basis='smooth_finite', cutoff=True
         ).mul(self.number_of_basis**0.5)
@@ -689,7 +689,7 @@ val_blocks = [
     (input_tensor.to(device), read_tensor.to(device), target_energy.to(device))
     for input_tensor, read_tensor, target_energy in [val_dataset[i] for i in range(len(val_dataset))]]
 # 设置验证集比例，假设选择20%的数据作为验证集
-validation_size = int(0.5 * len(val_blocks))
+validation_size = int(1 * len(val_blocks))
 
 # 随机选择验证集索引
 random.shuffle(val_blocks)  # 打乱数据顺序
