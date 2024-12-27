@@ -50,7 +50,7 @@ number_of_basis = 4 #e3nn中基函数的数量
 emb_number = [64,64] #嵌入网络e3MLP最好和主网络e3MLP隐藏层大小一致，层数多一层
 max_radius = 8
 """mainnet中e3层参数"""
-embedding_value = 900 #irreps_input_conv_main的维度
+embedding_value = max_atom * 9  * 10 #irreps_input_conv_main的维度
 irreps_input_conv_main = o3.Irreps(f"{max_atom * 10}x0e + {max_atom * 10}x1o + {max_atom * 10}x2e")
 irreps_output_conv_main = o3.Irreps(f"{max_atom * 5}x0e + {max_atom * 10}x1o + {max_atom * 10}x2e")
 irreps_input_conv_main_2 = irreps_output_conv_main
@@ -66,7 +66,7 @@ number_of_basis_main = 10
 
 main_hidden_sizes4 = [4]
 input_dim_weight = 1 #要和卷积层输出通道数一致
-dropout_value = 0.5
+dropout_value = 0.1
 
 patience_opim = 30
 patience = 10  # 早停参数
@@ -203,7 +203,7 @@ class EmbedNet(nn.Module):
             0.0,
             max_radius,
             number=number_of_basis,
-            basis='gaussian',
+            basis='smooth_finite',
             cutoff=True).to(device)
         edge_length_embedded = edge_length_embedded.mul(number_of_basis**0.5)
         edge_weight_cutoff = soft_unit_step(10 * (1 - edge_length / max_radius))
@@ -419,7 +419,7 @@ class embE3Conv(nn.Module):
             0.0, 
             self.max_radius, 
             self.number_of_basis, 
-            basis='gaussian', 
+            basis='smooth_finite', 
             cutoff=True).mul(self.number_of_basis ** 0.5).to(device)
         return scatter(self.tp(f_in[edge_src], sh, self.fc(edge_length_embedded)), edge_dst, dim=0, dim_size=self.max_atom).div(num_neighbors ** 0.5).to(device)
 
@@ -448,7 +448,7 @@ class E3Conv(nn.Module):
         # 计算球谐函数和基函数
         sh = o3.spherical_harmonics(self.irreps_sh, edge_vec, normalize=True, normalization='component')
         emb = soft_one_hot_linspace(
-            edge_vec.norm(dim=1), 0.0, self.max_radius, self.number_of_basis, basis='gaussian', cutoff=True
+            edge_vec.norm(dim=1), 0.0, self.max_radius, self.number_of_basis, basis='smooth_finite', cutoff=True
         ).mul(self.number_of_basis**0.5)
 
         out = scatter(
@@ -483,7 +483,7 @@ class E3_TransformerLayer(nn.Module):
             end=self.max_radius,
             number=self.number_of_basis,
             basis='gaussian',
-            cutoff=True
+            cutoff=False
         ).mul(self.number_of_basis**0.5)
         edge_weight_cutoff = soft_unit_step(10 * (1 - edge_length / self.max_radius))
         # 计算球谐函数
@@ -689,7 +689,7 @@ val_blocks = [
     (input_tensor.to(device), read_tensor.to(device), target_energy.to(device))
     for input_tensor, read_tensor, target_energy in [val_dataset[i] for i in range(len(val_dataset))]]
 # 设置验证集比例，假设选择20%的数据作为验证集
-validation_size = int(0.2 * len(val_blocks))
+validation_size = int(0.5 * len(val_blocks))
 
 # 随机选择验证集索引
 random.shuffle(val_blocks)  # 打乱数据顺序
