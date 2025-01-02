@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import random
 import torch
+import matplotlib.pyplot as plt
 torch.set_default_dtype(torch.float64)
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,7 +26,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message=".*TorchScript.*")
 torch.autograd.set_detect_anomaly(True)
 torch.amp.autocast(device_type='cuda', enabled=True)
-max_atom = 10
+max_atom = 5
 # 训练模型参数
 epoch_numbers = 100
 learning_rate = 0.0001
@@ -40,7 +41,7 @@ main_hidden_sizes1 = [4]
 main_hidden_sizes2 = [16,8]
 main_hidden_sizes3 = [4] #one-hot编码后MLP隐藏层
 """embnet中e3层参数"""
-channel_in = 20
+channel_in = 50
 irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_output_conv = o3.Irreps(f"{channel_in}x0e + {channel_in}x1o + {channel_in}x2e")
 irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
@@ -49,9 +50,9 @@ irreps_key = o3.Irreps("10x0e + 10x1o")
 irreps_output = o3.Irreps("10x0e + 10x1o + 10x2e") # 与v的不可约表示一致
 irreps_sh_conv = o3.Irreps.spherical_harmonics(lmax=2)
 irreps_sh_transformer = o3.Irreps.spherical_harmonics(lmax=2)
-emb_number = [32,32] #嵌入网络e3MLP最好和主网络e3MLP隐藏层大小一致，层数多一层
+emb_number = [128,128,128] #嵌入网络e3MLP最好和主网络e3MLP隐藏层大小一致，层数多一层
 number_of_basis = 4 #e3nn中基函数的数量
-max_radius = 10
+max_radius = 12
 function_type = 'smooth_finite'
 """mainnet中e3层参数"""
 embedding_value = max_atom * 9  * channel_in#irreps_input_conv_main的维度
@@ -63,9 +64,9 @@ irreps_query_main = o3.Irreps("5x0e + 5x1o")
 irreps_key_main = o3.Irreps("5x0e + 5x1o")
 hidden_dim_sh = o3.Irreps("10x0e")
 emb_number_main = [64,64]
-emb_number_main_2 = [32]
-number_of_basis_main = 15
-max_radius_main = 30
+emb_number_main_2 = [128,128,128]
+number_of_basis_main = 10
+max_radius_main = 100
 function_type_main = 'gaussian'
 
 
@@ -83,10 +84,12 @@ force_shift_value = 1
 force_coefficient = 1
 #a和b分别是energy_loss和force_loss的初始系数，update_param是这俩参数更新频率，n个batch更新一次
 a = 1
-b = 100
+b = 1
+mollifier_sigma = 1
+lambda_reg_value = 10
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
-batch_size = 16
+batch_size = 8
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
     def __init__(self):
@@ -135,6 +138,7 @@ class EmbedNet(nn.Module):
             nn.Linear(10, embed_size_2),
             nn.SiLU(),
             nn.Linear(embed_size_2, 1))
+        """
         # 定义 Gate 模块，使用 SiLU 激活
         self.gate = Gate(
             irreps_scalars="3x0e",  
@@ -143,7 +147,7 @@ class EmbedNet(nn.Module):
             act_gates=[torch.sigmoid],  # 对门控特征使用 Sigmoid
             irreps_gated="1x1e+1x1o"  # 假设使用偶向量和奇向量作为 gated 特征
         ).to(device)
-        """
+
         self.mlp2 = nn.Sequential(
             nn.Linear(3, embed_size),
             nn.Tanh(),
@@ -494,6 +498,8 @@ class E3_TransformerLayer(nn.Module):
             basis=function_type_main,
             cutoff=True
         ).mul(self.number_of_basis**0.5)
+        #print(edge_length_embedded.shape)
+        #self.plot_edge_length_embedded(edge_length_embedded)
         edge_weight_cutoff = soft_unit_step(5 * (1 - edge_length / self.max_radius))
         # 计算球谐函数
         edge_sh = o3.spherical_harmonics(self.irreps_sh, edge_vec, True, normalization='component')
@@ -510,6 +516,17 @@ class E3_TransformerLayer(nn.Module):
         f_new = self.non_linearity(f_new)
         f_new = self.linear_layer_2(f_new)
         return f_new
+    def plot_edge_length_embedded(self, edge_length_embedded):
+        """
+        绘制 edge_length_embedded 矩阵
+        """
+        plt.figure(figsize=(10, 6))
+        plt.imshow(edge_length_embedded.cpu().detach().numpy(), cmap='viridis', aspect='auto')
+        plt.colorbar(label='Value')
+        plt.xlabel('Basis Index')
+        plt.ylabel('Edge Index')
+        plt.title('Edge Length Embedded Matrix')
+        plt.show()
 class MainNet(nn.Module):
     def __init__(self, input_size, hidden_sizes, dropout_rate=dropout_value):
         super(MainNet, self).__init__()
@@ -708,7 +725,7 @@ val_blocks = [
     (input_tensor.to(device), read_tensor.to(device), target_energy.to(device))
     for input_tensor, read_tensor, target_energy in [val_dataset[i] for i in range(len(val_dataset))]]
 # 设置验证集比例，假设选择20%的数据作为验证集
-validation_size = int(0.2 * len(val_blocks))
+validation_size = int(1 * len(val_blocks))
 
 # 随机选择验证集索引
 random.shuffle(val_blocks)  # 打乱数据顺序
@@ -752,8 +769,8 @@ def compute_E(R, embed_value):
     E = T.view(-1)
     return E
 # 定义 Mollifier 函数
-def mollifier(R, sigma=1.0):
-    return torch.exp(-torch.norm(R, dim=-1)**2 / (2 * sigma**2)) / (sigma * torch.sqrt(2 * torch.tensor(torch.pi)))
+def mollifier(pos, sigma=mollifier_sigma):
+    return torch.exp(-torch.norm(pos, dim=-1)**2 / (2 * sigma**2)) / (sigma * torch.sqrt(2 * torch.tensor(torch.pi)))
 # 初始化嵌入网络和两个主网络
 embed_net1 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
 embed_net2 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
@@ -919,9 +936,9 @@ for epoch in range(1, epoch_numbers + 1):
             grad_energy = torch.autograd.grad(E_conv, pos, create_graph=True)[0]
             phi = mollifier(pos, sigma=sigma)
             reg_loss = torch.sum(torch.norm(grad_energy, dim=-1)**2 * phi)
-
+            print(reg_loss.item())
             # 总力的损失
-            lambda_reg = 0.1  # 正则化系数
+            lambda_reg = lambda_reg_value  # 正则化系数
             total_force_loss = force_loss + lambda_reg * reg_loss
 
             # 计算能量损失
@@ -938,7 +955,6 @@ for epoch in range(1, epoch_numbers + 1):
             torch.nn.utils.clip_grad_norm_(all_parameters, max_norm=max_norm_value)
             scaler.step(optimizer1)
             scaler.update()
-            
             # 学习率调整
             scheduler1.step()
             current_lr1 = scheduler1.get_last_lr()
@@ -1054,7 +1070,7 @@ for epoch in range(1, epoch_numbers + 1):
             e3conv_layer2.train()
             model.train()
             # 每 n个 epoch 保存一次模型
-        if batch_count % 1 == 0:
+        if batch_count % 10 == 0:
             torch.save({
                 'embed_net1_state_dict': embed_net1.state_dict(),
                 'embed_net2_state_dict': embed_net2.state_dict(),
