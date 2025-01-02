@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-max_atom = 20  # 最大原子数
+max_atom = 5  # 最大原子数
 
 def process_data(input_csv_path, output_csv_path, output_h5_path):
     # 确保所有数据为 float64
