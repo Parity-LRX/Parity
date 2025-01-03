@@ -3,6 +3,7 @@
 L = \frac{\lambda_E}{B} \sum_{b=1}^{B} \left( \hat{E}_b - E_b \right)^2 + \frac{\lambda_F}{3BN} \sum_{i=1}^{B \cdot N} \sum_{\alpha=1}^{3} \left( -\frac{\partial \hat{E}}{\partial r_{i,\alpha}} - F_{i,\alpha} \right)^2
 \]
 - \(B\)：batch_size大小。
+-  \(N\)：体系中原子数量。
 - \(\alpha\)：遍历三维坐标轴。
   
 在具体实例中，\(\lambda_E\) 和 \(\lambda_F\) 一般取值是1和1000，因为力的 *\(RMSE_{-Force}\)* 一般都很小, 所以给 \(\lambda_F\) 赋一个较大的值才能获得比较好的约束效果。
@@ -32,15 +33,15 @@ C_\epsilon \exp\left(-\frac{1}{1 - \|\mathbf{x}\|^2 / \epsilon^2}\right) & \text
 
 接下来，我们利用Mollifier函数对拟合的势能面的一阶导数进行处理，并为**正则化项**：
 \[
-\text{Reg-M} = \frac{\lambda_M}{B} \sum_{i=1}^{B} \sum_{\alpha=1}^{3} \int \left\| \frac{\partial \hat{E}}{\partial r_{i,\alpha}} \right\|^2 \phi(r_{i,\alpha}) \, dr_{i,\alpha}
+\text{Reg-M} = {\lambda_M}  \sum_{\alpha=1}^{3} \int \left\| \frac{\partial \hat{E}}{\partial r_{\alpha}} \right\|^2 \cdot \phi(r_{\alpha}) \, dr_{\alpha}
 \]
 
-最后将这个正则化项加到原始的损失函数 \(L\) 之中:
+最后将这个正则化项应用到原始的损失函数 \(L\) 之中:
 \[
-L = \frac{\lambda_M}{B} \sum_{i=1}^{B} \sum_{\alpha=1}^{3} \int \left\| \frac{\partial \hat{E}}{\partial r_{i,\alpha}} \right\|^2 \phi(r_{i,\alpha}) \, dr_{i,\alpha} + \frac{\lambda_E}{B} \sum_{b=1}^{B} \left( \hat{E}_b - E_b \right)^2 + \frac{\lambda_F}{3BN} \sum_{i=1}^{B \cdot N} \sum_{\alpha=1}^{3} \left( -\frac{\partial \hat{E}}{\partial r_{i,\alpha}} - F_{i,\alpha} \right)^2
+L = \frac{\lambda_M}{B} \sum_{i=1}^{B \cdot N} \sum_{\alpha=1}^{3}\left\| \frac{\partial \hat{E}}{\partial r_{i,\alpha}} \right\|^2 \cdot  \phi(r_{i,\alpha}) \ + \frac{\lambda_E}{B} \sum_{b=1}^{B} \left( \hat{E}_b - E_b \right)^2 + \frac{\lambda_F}{3BN} \sum_{i=1}^{B \cdot N} \sum_{\alpha=1}^{3} \left( -\frac{\partial \hat{E}}{\partial r_{i,\alpha}} - F_{i,\alpha} \right)^2
 \]
 
-实际使用之中，对原始数据合理放缩之后，\(\sigma\) 建议设置为1， \(\lambda_M\)可以尝试先设置为10，此时 \(\lambda_F\) 建议设置为与 \(\lambda_M\) 相同或更小的数量级，比如5 。
+实际使用之中，对原始数据合理放缩之后，\(\sigma\) 建议设置为1， \(\lambda_M\)可以尝试先设置为100，此时 \(\lambda_F\) 建议设置为与 \(\lambda_M\) 相同或更小的数量级，比如10 。
 
 #### **在 \(L\) 中加上 \(\text{Reg-M}\) 有什么好处？**
 
