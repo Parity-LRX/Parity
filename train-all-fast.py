@@ -114,10 +114,10 @@ energy_std = energy_df['Energy'].std()
 class EmbedNet(nn.Module):
     def __init__(self, input_size, embed_size, num_heads, num_layers, dropout_rate=0.1):
         super(EmbedNet, self).__init__()
-        self.cache = {}
-        self.fitnet = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_rate).to(device)
-        self.fitnet_2 = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_rate).to(device)
-        self.e3_conv_emb = embE3Conv(max_atom, number_of_basis, max_radius, irreps_input_conv, irreps_sh_conv, irreps_output_conv).to(device)
+        self.fitnet = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_rate)
+        self.fitnet_2 = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_rate)
+        self.e3_conv_emb = embE3Conv(max_atom, number_of_basis, max_radius, irreps_input_conv, irreps_sh_conv, irreps_output_conv)
+        self.linear_layer = o3.Linear(irreps_output_conv, irreps_output_conv)
         self.mlp = nn.Sequential(
             nn.Linear(3, embed_size),
             nn.SiLU(),
@@ -226,7 +226,7 @@ class EmbedNet(nn.Module):
     
         # 将结果重塑为 (batch_size, num_nodes, output_dim)
         J = J_flat.view(batch_size, num_nodes, -1)  # (batch_size, num_nodes, output_dim)
-
+        J = self.linear_layer(J)
         return J
 
 class MultiHeadAttention(nn.Module):
