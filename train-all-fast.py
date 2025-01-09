@@ -1013,9 +1013,9 @@ for epoch in range(1, epoch_numbers + 1):
             print(f"Model saved at batch_count {batch_count} as 'combined_model_batch_count_{batch_count}.pth'.")
             loss_out_df = pd.DataFrame(loss_out)
             loss_out_df.to_csv(f'epoch_{epoch}_batch_count_{batch_count}_loss.csv', index=False)
-                # 早停机制
-    if total_loss < best_val_loss:
-        best_val_loss = total_loss
+    # 早停机制
+    if total_val_loss1 < best_val_loss:
+        best_val_loss = total_val_loss1
         patience_counter = 0  
     else:
         patience_counter += 1 
