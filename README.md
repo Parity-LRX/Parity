@@ -35,9 +35,9 @@
       pip install torch==2.4.1
       ```
 
-- **torch_scatter**: 用于在图神经网络中进行散射操作的库，支持稀疏张量操作。
+- **torch_scatter和torch_cluster**: 用于在图神经网络中进行操作的库，支持稀疏张量操作。
   - 安装命令: `pip install torch-scatter`
-
+  - 安装命令: `pip install torch-cluster`
 - **e3nn**: 用于处理图形卷积神经网络中的对称性操作，专门用于处理对称张量、群表示和等变神经网络。
   - 安装命令: `pip install e3nn`
 
