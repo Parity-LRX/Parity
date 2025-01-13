@@ -29,9 +29,9 @@ torch.amp.autocast(device_type='cuda', enabled=True)
 max_atom = 10
 # 训练模型参数
 epoch_numbers = 100
-learning_rate = 0.00004
-embed_size = 16 #G矩阵的MLP隐藏层
-embed_size_2 = 48  #O和B的MLP隐藏层
+learning_rate = 0.0001
+embed_size = 32 #G矩阵的MLP隐藏层
+embed_size_2 = 32  #O和B的MLP隐藏层
 num_heads = 4  # 多头注意力头数
 num_layers = 4  # Transformer层数
 input_size_value = 6 #R的维度
@@ -41,7 +41,7 @@ main_hidden_sizes1 = [4]
 main_hidden_sizes2 = [16,8]
 main_hidden_sizes3 = [4] #one-hot编码后MLP隐藏层
 """embnet中e3层参数"""
-channel_in = 32
+channel_in = 48
 irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_output_conv = o3.Irreps(f"{channel_in}x0e + {channel_in}x1o + {channel_in}x2e")
 irreps_iutput_conv_2 = o3.Irreps(f"{channel_in}x0e + {channel_in}x1o + {channel_in}x2e")
@@ -66,9 +66,9 @@ irreps_query_main = o3.Irreps("20x0e + 20x1o")
 irreps_key_main = o3.Irreps("5x0e + 5x1o")
 hidden_dim_sh = o3.Irreps("10x0e")
 emb_number_main = [64,64]
-emb_number_main_2 = [64,64]
+emb_number_main_2 = [64,64,64]
 number_of_basis_main = 15
-max_radius_main = 15
+max_radius_main = 30
 function_type_main = 'gaussian'
 
 
@@ -77,22 +77,22 @@ input_dim_weight = 1 #要和卷积层输出通道数一致
 dropout_value = 0
 
 patience_opim = 30
-gamma_value = 0.8
-patience = 10  # 早停参数
+gamma_value = 0.98
+patience = 1  # 早停参数
 
 #定义一个映射，E_trans = E/energy_shift_value + energy_shift_value2
 energy_shift_value = 1
 energy_shift_value2 = 0
 force_shift_value = 1
-force_coefficient = 1
+force_coefficient = 1000
 #a和b分别是energy_loss和force_loss的初始系数，update_param是这俩参数更新频率，n个batch更新一次
 a = 1
-b = 1
+b = 10
 mollifier_sigma = 1
-lambda_reg_value = 100
+lambda_reg_value = 1000
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
-batch_size = 8
+batch_size = 4
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
     def __init__(self):
@@ -190,8 +190,8 @@ class EmbedNet(nn.Module):
         输出形状为 (batch_size, num_nodes, output_dim)。
         """
         # 假设 batch_size 由 len(dimensions) 决定
-        batch_size = len(dimensions)
-        num_nodes = R.size(1)  # 从 R 中获取 num_nodes
+        batch_size = R.size(0)
+        num_nodes = max_atom  # 从 R 中获取 num_nodes
 
         # One-Hot 编码
         R5_one_hot = F.one_hot(R[:, :, 4].long(), num_classes=10).to(torch.float64)  # (batch_size, num_nodes, 10)
@@ -613,12 +613,14 @@ class CustomDataset(Dataset):
         self.read_data = pd.read_hdf(read_file_path)
         self.energy_df = pd.read_hdf(energy_file_path)
         
-        # 计算能量的均值、标准差
-        self.energy_mean = energy_mean
-        self.energy_std = energy_std
+        # 计算能量的最大值和最小值
+        self.energy_min = energy_min
+        self.energy_max = energy_max
         
-        # 标准归一化
-        self.energy_df['Transformed_Energy'] = (self.energy_df['Energy'] - self.energy_mean)
+        # 最小值-最大值归一化
+        self.energy_df['Transformed_Energy'] = (
+            self.energy_df['Energy'] - self.energy_min
+        ) / (self.energy_max - self.energy_min)
         
         # 创建数据块
         self.input_data_blocks = self._create_data_blocks(self.input_data)
@@ -630,7 +632,6 @@ class CustomDataset(Dataset):
         current_block = []
         stop_value = 128128.0  # 分隔符的浮动值
         
-        # 遍历每一行数据，检查是否遇到 128128.0
         for index, row in data.iterrows():
             if stop_value in row.values:  # 如果当前行包含 128128.0
                 if current_block:
@@ -645,12 +646,12 @@ class CustomDataset(Dataset):
         return blocks
     
     def restore_energy(self, normalized_energy):
-        # 反归一化
-        return normalized_energy + self.energy_mean
+        # 反归一化：还原到原始能量
+        return normalized_energy * (self.energy_max - self.energy_min) + self.energy_min
     
     def restore_force(self, normalized_force):
-        # 使用与能量相同的标准差进行反归一化
-        return normalized_force
+        # 使用与能量相同的标准差进行反归一化（此处未涉及最小值-最大值归一化）
+        return normalized_force * (self.energy_max - self.energy_min)
     
     def __len__(self):
         return len(self.input_data_blocks)
@@ -671,6 +672,7 @@ class CustomDataset(Dataset):
         target_energy = torch.tensor(self.energy_df['Transformed_Energy'].iloc[idx], dtype=torch.float64, device=device)
         
         return input_tensor, read_tensor, target_energy
+
     # 加载数据集
 train_dataset = CustomDataset('train-fix.h5', 'read_train.h5', 'energy_train.h5')
 val_dataset = CustomDataset('val-fix.h5', 'read_val.h5', 'energy_val.h5')
@@ -682,20 +684,15 @@ val_blocks = [
     (input_tensor.to(device), read_tensor.to(device), target_energy.to(device))
     for input_tensor, read_tensor, target_energy in [val_dataset[i] for i in range(len(val_dataset))]]
 # 设置验证集比例，假设选择20%的数据作为验证集
-validation_size = int(1 * len(val_blocks))
+validation_size = int(0.5 * len(val_blocks))
 
 # 随机选择验证集索引
 #random.shuffle(val_blocks)  # 打乱数据顺序
 val_data = val_blocks[:validation_size]  # 选择前20%作为验证集
 cached_R = None
 def compute_R(block, cache=True):#R的定义需要包含S、广义坐标（求导得到x、y、z方向力）、原子序号和环境原子序号
-    global cached_R
-    if cached_R is not None and cache:
-        return cached_R  # 返回缓存
     R = block[:, 1:7].to(device)  # 直接提取需要的列
     R.requires_grad_()  # 设置需要计算梯度
-    if cache:
-        cached_R = R  # 缓存计算结果
     return R
 def compute_T(embed_net, R):
     """
@@ -816,7 +813,6 @@ for epoch in range(1, epoch_numbers + 1):
             E_sum_all = []
             for input_tensor, read_tensor, target_energy in zip(input_tensors, read_tensors, target_energies):
                 optimizer1.zero_grad()
-                
                 fx_pred_all, fy_pred_all, fz_pred_all = [], [], []
                 fx_ref = read_tensor[:, 5] * force_shift_value
                 fy_ref = read_tensor[:, 6] * force_shift_value
@@ -827,11 +823,11 @@ for epoch in range(1, epoch_numbers + 1):
                 pos = read_tensor[:, [1, 2, 3]]
                 pos.requires_grad = True
                 
-                all_E = torch.zeros(len(dimensions), embedding_value, dtype=torch.float64, device=device)
+                #all_E = torch.zeros(len(dimensions), embedding_value, dtype=torch.float64, device=device)
 
                 R_values = compute_R(input_tensor)  # 假设 compute_R 返回形状为 (num_samples, 6)
 
-                R_reshaped = R_values.reshape(len(dimensions), max_atom, 6)
+                R_reshaped = R_values.reshape(-1, max_atom, 6)
 
                 # 如果需要，可以将 R_reshaped 转换为 float64 类型并移动到指定设备
                 R_reshaped = R_reshaped.to(dtype=torch.float64, device=device)
@@ -841,10 +837,10 @@ for epoch in range(1, epoch_numbers + 1):
 
                 # 将 E 重塑为 (len(dimensions), embedding_value)
                 E = E.view(len(dimensions), -1)  # 假设 embedding_value = max_atom * output_dim
-                all_E = E  # 直接使用 E 填充 all_E
+                #all_E = E  # 直接使用 E 填充 all_E
 
                 # 将 all_E 按行堆叠成一个 len(dimensions) x embedding_value 的张量
-                E_cat = all_E
+                E_cat = E
 
                 # 进行后续的计算
                 # E_conv = e3conv_layer(E_cat, pos)
@@ -887,6 +883,7 @@ for epoch in range(1, epoch_numbers + 1):
             # 计算能量损失
             E_sum_tensor = torch.tensor(E_sum_all, device=device, requires_grad=True).view(-1)
             energy_loss = criterion(E_sum_tensor, target_energies)
+            print(E_sum_tensor , target_energies)
             energy_rmse = train_dataset.restore_force(energy_loss ** 0.5)
             batch_energy_loss += energy_loss.item()
 
@@ -928,14 +925,14 @@ for epoch in range(1, epoch_numbers + 1):
 
                 # 预分配一个大张量，假设你知道最终结果的形状
                 # 比如这里假设是 40 x 450 的矩阵
-                num_dimensions = len(dimensions_val)  # 维度的数量
+                #num_dimensions = len(dimensions_val)  # 维度的数量
                 embedding_size = embedding_value  # 假设每个维度的嵌入大小是 450
 
-                all_E_val = torch.zeros(num_dimensions, embedding_size, dtype=torch.float64, device=device)
+                #all_E_val = torch.zeros(num_dimensions, embedding_size, dtype=torch.float64, device=device)
 
                 R_values_val = compute_R(input_tensor)  # 假设 compute_R 可以一次性处理所有数据
                 # 将 R_values 重塑为 (len(dimensions), max_atom, 6)
-                R_reshaped_val = R_values_val.reshape(len(dimensions), max_atom, 6)
+                R_reshaped_val = R_values_val.reshape(-1, max_atom, 6)
                 R_reshaped_val = R_reshaped_val.to(dtype=torch.float64, device=device)
 
 
@@ -943,9 +940,9 @@ for epoch in range(1, epoch_numbers + 1):
                 E_val = compute_E_test(R_reshaped_val)  # 假设 compute_E_test 返回形状为 (len(dimensions), max_atom * output_dim)
 
                # 将 E 重塑为 (len(dimensions), embedding_value)
-                E_val = E_val.view(len(dimensions), -1)  # 假设 embedding_value = max_atom * output_dim
-                all_E_val = E_val  # 直接使用 E 填充 all_E
-                E_cat_val  = all_E_val
+                E_val = E_val.view(-1, embedding_value)  # 假设 embedding_value = max_atom * output_dim
+                #all_E_val = E_val  # 直接使用 E 填充 all_E
+                E_cat_val  = E_val
                 # 进行后续计算
                 # E_conv_val = e3conv_layer(E_cat_val, pos_val)
                 E_conv_val = e3trans(E_cat_val, pos_val).mean()
@@ -998,7 +995,7 @@ for epoch in range(1, epoch_numbers + 1):
             e3trans.train()
             model.train()
             # 每 n个 epoch 保存一次模型
-        if batch_count % 30 == 0:
+        if batch_count % 80 == 0:
             torch.save({
                 'embed_net1_state_dict': embed_net1.state_dict(),
                 'model_state_dict': model.state_dict(),
@@ -1013,7 +1010,7 @@ for epoch in range(1, epoch_numbers + 1):
             print(f"Model saved at batch_count {batch_count} as 'combined_model_batch_count_{batch_count}.pth'.")
             loss_out_df = pd.DataFrame(loss_out)
             loss_out_df.to_csv(f'epoch_{epoch}_batch_count_{batch_count}_loss.csv', index=False)
-    # 早停机制
+                # 早停机制
     if total_val_loss1 < best_val_loss:
         best_val_loss = total_val_loss1
         patience_counter = 0  
