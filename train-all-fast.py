@@ -26,6 +26,12 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message=".*TorchScript.*")
 torch.autograd.set_detect_anomaly(True)
 torch.amp.autocast(device_type='cuda', enabled=True)
+#确定数据放缩范围
+energy_df = pd.read_hdf("energy_train.h5")
+energy_max = energy_df['Energy'].max()
+energy_min = energy_df['Energy'].min()
+energy_mean = energy_df['Energy'].mean()
+energy_std = energy_df['Energy'].std()
 max_atom = 10
 # 训练模型参数
 epoch_numbers = 100
@@ -41,11 +47,12 @@ main_hidden_sizes1 = [4]
 main_hidden_sizes2 = [16,8]
 main_hidden_sizes3 = [4] #one-hot编码后MLP隐藏层
 """embnet中e3层参数"""
-channel_in = 48
+channel_in = 16
+channel_in2 = 16
 irreps_input_conv = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_output_conv = o3.Irreps(f"{channel_in}x0e + {channel_in}x1o + {channel_in}x2e")
 irreps_iutput_conv_2 = o3.Irreps(f"{channel_in}x0e + {channel_in}x1o + {channel_in}x2e")
-irreps_output_conv_2 = o3.Irreps(f"{channel_in}x0e + {channel_in}x1o + {channel_in}x2e")
+irreps_output_conv_2 = o3.Irreps(f"{channel_in2}x0e + {channel_in2}x1o + {channel_in2}x2e")
 irreps_input = o3.Irreps("1x0e + 1x1o + 1x2e + 1x3o")
 irreps_query = o3.Irreps("10x0e + 10x1o")
 irreps_key = o3.Irreps("10x0e + 10x1o") 
@@ -53,12 +60,12 @@ irreps_output = o3.Irreps("10x0e + 10x1o + 10x2e") # 与v的不可约表示一�
 irreps_sh_conv = o3.Irreps.spherical_harmonics(lmax=2)
 irreps_sh_transformer = o3.Irreps.spherical_harmonics(lmax=2)
 emb_number = [64,64,64] #嵌入网络e3MLP最好和主网络e3MLP隐藏层大小一致，层数多一层
-number_of_basis = 4 #e3nn中基函数的数量
+number_of_basis = 8 #e3nn中基函数的数量
 max_radius = 8
 function_type = 'gaussian'
 """mainnet中e3层参数"""
-embedding_value = max_atom * 9  * channel_in#irreps_input_conv_main的维度
-irreps_input_conv_main = o3.Irreps(f"{max_atom * channel_in}x0e + {max_atom * channel_in}x1o + {max_atom * channel_in}x2e")
+embedding_value = max_atom * 9  * channel_in2#irreps_input_conv_main的维度
+irreps_input_conv_main = o3.Irreps(f"{max_atom * channel_in2}x0e + {max_atom * channel_in2}x1o + {max_atom * channel_in2}x2e")
 irreps_output_conv_main = o3.Irreps(f"{max_atom * 5}x0e + {max_atom * 10}x1o + {max_atom * 10}x2e")
 irreps_input_conv_main_2 = irreps_output_conv_main
 irreps_output_conv_main_2 = o3.Irreps("50x0e")
@@ -67,7 +74,7 @@ irreps_key_main = o3.Irreps("5x0e + 5x1o")
 hidden_dim_sh = o3.Irreps("10x0e")
 emb_number_main = [64,64]
 emb_number_main_2 = [64,64,64]
-number_of_basis_main = 15
+number_of_basis_main = 30
 max_radius_main = 30
 function_type_main = 'gaussian'
 
@@ -77,22 +84,26 @@ input_dim_weight = 1 #要和卷积层输出通道数一致
 dropout_value = 0
 
 patience_opim = 30
-gamma_value = 0.98
-patience = 1  # 早停参数
+gamma_value = 0.9
+patience = 5  # 早停参数
 
 #定义一个映射，E_trans = E/energy_shift_value + energy_shift_value2
 energy_shift_value = 1
 energy_shift_value2 = 0
 force_shift_value = 1
-force_coefficient = 1000
+force_coefficient = 1
 #a和b分别是energy_loss和force_loss的初始系数，update_param是这俩参数更新频率，n个batch更新一次
 a = 1
-b = 10
+b = 1
 mollifier_sigma = 1
-lambda_reg_value = 1000
+lambda_reg_value = 100
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
-batch_size = 4
+batch_size = 16
+#原子参考能量
+keys = torch.tensor([1, 6, 7, 8])
+values = torch.tensor([-13.61311871, -1029.86289467, -1485.30218354, -2042.61078371])
+
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
     def __init__(self):
@@ -102,15 +113,10 @@ class RMSELoss(torch.nn.Module):
         return torch.sqrt(self.mse(y_pred, y_true))
 criterion_2 = RMSELoss()
 #criterion = nn.SmoothL1Loss(beta=0.5)
-criterion = nn.MSELoss()
+criterion = nn.SmoothL1Loss()
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#确定数据放缩范围
-energy_df = pd.read_hdf("energy_train.h5")
-energy_max = energy_df['Energy'].max()
-energy_min = energy_df['Energy'].min()
-energy_mean = energy_df['Energy'].mean()
-energy_std = energy_df['Energy'].std()
+
 # 定义Transformer嵌入网络
 class EmbedNet(nn.Module):
     def __init__(self, input_size, embed_size, num_heads, num_layers, dropout_rate=0.1):
@@ -118,7 +124,9 @@ class EmbedNet(nn.Module):
         self.fitnet = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_rate).to(device)
         self.fitnet_2 = MainNet2(input_size=1, hidden_sizes=main_hidden_sizes3, dropout_rate=dropout_rate).to(device)
         self.e3_conv_emb = embE3Conv(max_atom, number_of_basis, max_radius, irreps_input_conv, irreps_sh_conv, irreps_output_conv).to(device)
+        self.e3_conv_emb2 = embE3Conv(max_atom, number_of_basis, max_radius, irreps_output_conv, irreps_sh_conv, irreps_output_conv_2).to(device)
         self.linear_layer = o3.Linear(irreps_output_conv, irreps_output_conv)
+        self.linear_layer2 = o3.Linear(irreps_output_conv_2, irreps_output_conv_2)
         self.mlp = nn.Sequential(
             nn.Linear(3, embed_size),
             nn.SiLU(),
@@ -219,10 +227,11 @@ class EmbedNet(nn.Module):
 
         # 调用 e3_conv_emb
         J_flat = self.e3_conv_emb(A, Z)  # (batch_size * num_nodes, output_dim)
-    
+        J_flat = self.linear_layer(J_flat)
+        J_flat = self.e3_conv_emb2(J_flat, Z)
         # 将结果重塑为 (batch_size, num_nodes, output_dim)
         J = J_flat.view(batch_size, num_nodes, -1)  # (batch_size, num_nodes, output_dim)
-        J = self.linear_layer(J)
+        J = self.linear_layer2(J)
 
         return J
 
@@ -616,12 +625,12 @@ class CustomDataset(Dataset):
         # 计算能量的最大值和最小值
         self.energy_min = energy_min
         self.energy_max = energy_max
+        self.energy_mean = energy_mean
         
         # 最小值-最大值归一化
-        self.energy_df['Transformed_Energy'] = (
-            self.energy_df['Energy'] - self.energy_min
-        ) / (self.energy_max - self.energy_min)
-        
+        #self.energy_df['Transformed_Energy'] = (self.energy_df['Energy'] - self.energy_min) / (self.energy_max - self.energy_min)
+        #self.energy_df['Transformed_Energy'] = self.energy_df['Energy'] - self.energy_mean
+        self.energy_df['Transformed_Energy'] = self.energy_df['Energy']
         # 创建数据块
         self.input_data_blocks = self._create_data_blocks(self.input_data)
         self.read_data_blocks = self._create_data_blocks(self.read_data)
@@ -647,11 +656,13 @@ class CustomDataset(Dataset):
     
     def restore_energy(self, normalized_energy):
         # 反归一化：还原到原始能量
-        return normalized_energy * (self.energy_max - self.energy_min) + self.energy_min
+        #return normalized_energy * (self.energy_max - self.energy_min) + self.energy_min
+        #return normalized_energy  + self.energy_mean
+        return normalized_energy
     
     def restore_force(self, normalized_force):
         # 使用与能量相同的标准差进行反归一化（此处未涉及最小值-最大值归一化）
-        return normalized_force * (self.energy_max - self.energy_min)
+        return normalized_force 
     
     def __len__(self):
         return len(self.input_data_blocks)
@@ -722,6 +733,28 @@ def compute_E_test(R):
 # 定义 Mollifier 函数
 def mollifier(pos, sigma=mollifier_sigma):
     return torch.exp(-torch.norm(pos, dim=-1)**2 / (2 * sigma**2)) / (sigma * torch.sqrt(2 * torch.tensor(torch.pi)))
+def map_tensor_values(x, keys, values):
+    """
+    将张量 `x` 中的值按照键值对 (keys, values) 进行映射。
+
+    Args:
+        x (torch.Tensor): 需要进行映射的输入张量。
+        keys (torch.Tensor): 映射键的张量。
+        values (torch.Tensor): 映射值的张量，`keys` 和 `values` 一一对应。
+
+    Returns:
+        torch.Tensor: 按照映射规则替换后的张量。
+    """
+    # 检查 keys 和 values 是否长度一致
+    if keys.size(0) != values.size(0):
+        raise ValueError("`keys` and `values` must have the same length.")
+    
+    # 获取 x 中每个值在 keys 中的索引
+    indices = (x.unsqueeze(-1) == keys).nonzero(as_tuple=True)[1]
+    
+    # 根据索引取出对应的值
+    mapped_values = values[indices]
+    return mapped_values
 # 初始化嵌入网络和两个主网络
 embed_net1 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
 #embed_net2 = EmbedNet(input_size=input_size_value, embed_size=embed_size, num_heads=num_heads, num_layers=num_layers, dropout_rate=dropout_value).to(device)
@@ -822,7 +855,9 @@ for epoch in range(1, epoch_numbers + 1):
                 
                 pos = read_tensor[:, [1, 2, 3]]
                 pos.requires_grad = True
-                
+                A = read_tensor[:, 4]
+                mapped_A = map_tensor_values(A, keys, values)
+                E_offset = mapped_A.mean()
                 #all_E = torch.zeros(len(dimensions), embedding_value, dtype=torch.float64, device=device)
 
                 R_values = compute_R(input_tensor)  # 假设 compute_R 返回形状为 (num_samples, 6)
@@ -844,11 +879,13 @@ for epoch in range(1, epoch_numbers + 1):
 
                 # 进行后续的计算
                 # E_conv = e3conv_layer(E_cat, pos)
-                E_conv = e3trans(E_cat, pos).mean()
+                E_conv = e3trans(E_cat, pos)
+                #E_conv = E_conv * mapped_A    
+                E_conv = E_conv.mean()
                 #E_conv = E_conv.reshape(1,-1)
                 #E_conv = model(E_conv)
                 #E_total = E_conv.sum()
-                E_mean = E_conv
+                E_mean = E_conv + E_offset
                 E_mean.backward(retain_graph=True)
                 fx_pred_conv = train_dataset.restore_force(-pos.grad[:, 0]) / force_coefficient
                 fy_pred_conv = train_dataset.restore_force(-pos.grad[:, 1]) / force_coefficient 
@@ -875,15 +912,13 @@ for epoch in range(1, epoch_numbers + 1):
             grad_energy = torch.autograd.grad(E_conv, pos, create_graph=True)[0]
             phi = mollifier(pos, sigma=mollifier_sigma)
             reg_loss = torch.sum(torch.norm(grad_energy, dim=-1)**2 * phi)
-            print(reg_loss.item())
             # 总力的损失
             lambda_reg = lambda_reg_value / b # 正则化系数
             total_force_loss = force_loss + lambda_reg * reg_loss
 
             # 计算能量损失
             E_sum_tensor = torch.tensor(E_sum_all, device=device, requires_grad=True).view(-1)
-            energy_loss = criterion(E_sum_tensor, target_energies)
-            print(E_sum_tensor , target_energies)
+            energy_loss = criterion(E_sum_tensor, (target_energies))
             energy_rmse = train_dataset.restore_force(energy_loss ** 0.5)
             batch_energy_loss += energy_loss.item()
 
@@ -902,114 +937,117 @@ for epoch in range(1, epoch_numbers + 1):
             print(f"Epoch {epoch}, Batch {batch_idx + 1}/{len(train_loader)}, "
                 f"Total Loss: {total_loss}, Energy RMSE:{energy_rmse}, Force Loss: {total_force_loss}, Force RMSE:{force_rmse}, "
                 f"Learning Rate: {current_lr1[0]}",f"batch time: {end_time_batch - start_time_batch:.2f} seconds")
-            total_energy_loss_val = 0.0
-            total_force_loss_val = 0.0
-            embed_net1.eval()
-            e3trans.eval()
-            model.eval()
-            #with torch.no_grad():
-            E_sum_all_val = []
-            target_E_all_val = []
-            for input_tensor, read_tensor, target_energy in val_data:  # 使用预加载的数据
-                if input_tensor is None or read_tensor is None or target_energy is None:
-                    continue  # 跳过空块
-                input_tensor = input_tensor.to(device)
-                read_tensor = read_tensor.to(device)
-                pos_val = read_tensor[:, [1, 2, 3]]
-                pos_val.requires_grad = True
-                fx_ref_val = read_tensor[:, 5] * force_shift_value  # x 方向参考力
-                fy_ref_val = read_tensor[:, 6] * force_shift_value  # y 方向参考力
-                fz_ref_val = read_tensor[:, 7] * force_shift_value  # z 方向参考力
-                # 获取所有维度的信息
-                dimensions_val = input_tensor[:, 0].unique().tolist()
+        total_energy_loss_val = 0.0
+        total_force_loss_val = 0.0
+    embed_net1.eval()
+    e3trans.eval()
+    model.eval()
+    #with torch.no_grad():
+    E_sum_all_val = []
+    target_E_all_val = []
+    for input_tensor, read_tensor, target_energy in val_data:  # 使用预加载的数据
+        if input_tensor is None or read_tensor is None or target_energy is None:
+            continue  # 跳过空块
+        input_tensor = input_tensor.to(device)
+        read_tensor = read_tensor.to(device)
+        pos_val = read_tensor[:, [1, 2, 3]]
+        pos_val.requires_grad = True
+        fx_ref_val = read_tensor[:, 5] * force_shift_value  # x 方向参考力
+        fy_ref_val = read_tensor[:, 6] * force_shift_value  # y 方向参考力
+        fz_ref_val = read_tensor[:, 7] * force_shift_value  # z 方向参考力
+        # 获取所有维度的信息
+        dimensions_val = input_tensor[:, 0].unique().tolist()
+        A_val = read_tensor[:, 4]
+        mapped_A_val = map_tensor_values(A_val, keys, values)
+        E_offset_val = mapped_A_val.mean()
 
-                # 预分配一个大张量，假设你知道最终结果的形状
-                # 比如这里假设是 40 x 450 的矩阵
-                #num_dimensions = len(dimensions_val)  # 维度的数量
-                embedding_size = embedding_value  # 假设每个维度的嵌入大小是 450
+        # 预分配一个大张量，假设你知道最终结果的形状
+        # 比如这里假设是 40 x 450 的矩阵
+        #num_dimensions = len(dimensions_val)  # 维度的数量
+        #embedding_size = embedding_value  # 假设每个维度的嵌入大小是 450
 
-                #all_E_val = torch.zeros(num_dimensions, embedding_size, dtype=torch.float64, device=device)
+        #all_E_val = torch.zeros(num_dimensions, embedding_size, dtype=torch.float64, device=device)
 
-                R_values_val = compute_R(input_tensor)  # 假设 compute_R 可以一次性处理所有数据
-                # 将 R_values 重塑为 (len(dimensions), max_atom, 6)
-                R_reshaped_val = R_values_val.reshape(-1, max_atom, 6)
-                R_reshaped_val = R_reshaped_val.to(dtype=torch.float64, device=device)
+        R_values_val = compute_R(input_tensor)  # 假设 compute_R 可以一次性处理所有数据
+        # 将 R_values 重塑为 (len(dimensions), max_atom, 6)
+        R_reshaped_val = R_values_val.reshape(-1, max_atom, 6)
+        R_reshaped_val = R_reshaped_val.to(dtype=torch.float64, device=device)
 
 
-                # 调用 compute_E_test
-                E_val = compute_E_test(R_reshaped_val)  # 假设 compute_E_test 返回形状为 (len(dimensions), max_atom * output_dim)
+        # 调用 compute_E_test
+        E_val = compute_E_test(R_reshaped_val)  # 假设 compute_E_test 返回形状为 (len(dimensions), max_atom * output_dim)
 
-               # 将 E 重塑为 (len(dimensions), embedding_value)
-                E_val = E_val.view(-1, embedding_value)  # 假设 embedding_value = max_atom * output_dim
-                #all_E_val = E_val  # 直接使用 E 填充 all_E
-                E_cat_val  = E_val
-                # 进行后续计算
-                # E_conv_val = e3conv_layer(E_cat_val, pos_val)
-                E_conv_val = e3trans(E_cat_val, pos_val).mean()
-                #E_conv_val = E_conv_val.reshape(1,-1)
-                #E_conv_val = model(E_conv_val)
-                #E_total_val = E_conv_val.sum()
-                E_mean_val = E_conv_val
-                E_mean_val.backward(retain_graph=True)
-                E_sum_all_val.append(E_mean_val)
-                target_E_all_val.append(target_energy)
-                print(f"Total E_sum_val for this molecule: {val_dataset.restore_energy(E_mean_val.item())}")
-                fx_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 0]) / force_coefficient
-                fy_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 1]) / force_coefficient
-                fz_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 2]) / force_coefficient
+        # 将 E 重塑为 (len(dimensions), embedding_value)
+        E_val = E_val.view(len(dimensions_val),-1)  # 假设 embedding_value = max_atom * output_dim
+        #all_E_val = E_val  # 直接使用 E 填充 all_E
+        E_cat_val  = E_val
+        # 进行后续计算
+        # E_conv_val = e3conv_layer(E_cat_val, pos_val)
+        E_conv_val = e3trans(E_cat_val, pos_val).mean()
+        #E_conv_val = E_conv_val.reshape(1,-1)
+        #E_conv_val = model(E_conv_val)
+        #E_total_val = E_conv_val.sum()
+        E_mean_val = E_conv_val + E_offset_val
+        E_mean_val.backward(retain_graph=True)
+        E_sum_all_val.append(E_mean_val)
+        target_E_all_val.append(target_energy)
+        print(f"Total E_sum_val for this molecule: {val_dataset.restore_energy(E_mean_val.item())}")
+        fx_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 0]) / force_coefficient
+        fy_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 1]) / force_coefficient
+        fz_pred_conv_val = val_dataset.restore_force(-pos_val.grad[:, 2]) / force_coefficient
 
-                fx_pred_conv_batch_val = fx_pred_conv_val.to(device).view(-1)
-                fy_pred_conv_batch_val = fy_pred_conv_val.to(device).view(-1)
-                fz_pred_conv_batch_val = fz_pred_conv_val.to(device).view(-1)      
-            fx_ref_val = fx_ref_val.to(device).view(-1)
-            fy_ref_val = fy_ref_val.to(device).view(-1)
-            fz_ref_val = fz_ref_val.to(device).view(-1)
-            force_loss_val = ((
-                criterion_2(fx_pred_conv_batch_val, fx_ref_val) +
-                criterion_2(fx_pred_conv_batch_val, fy_ref_val) +
-                criterion_2(fx_pred_conv_batch_val, fz_ref_val)) / 3)
-            E_sum_val_tensor = torch.tensor(E_sum_all_val, device=device,requires_grad=True).view(-1)
-            target_E_all_val_tensor = torch.tensor(target_E_all_val, device=device,requires_grad=True).view(-1)
-            energy_loss_val = val_dataset.restore_force(criterion(E_sum_val_tensor, target_E_all_val_tensor)**0.5)
-            total_energy_loss_val = energy_loss_val.item()
-            total_force_loss_val = force_loss_val.item()
-            total_val_loss1 = (total_energy_loss_val + total_force_loss_val)
-            print(f"""Epoch {epoch}/{epoch_numbers},
-                Total Loss _val: {total_val_loss1},
-                Energy RMSE_val: {total_energy_loss_val},
-                Force RMSE_val: {total_force_loss_val},
-                Current learning rate1: {current_lr1[0]}, """)
-            loss_out.append({
-                    "epoch": epoch,
-                    "batch_count":batch_count,
-                    "Energy Loss": energy_loss.item(), 
-                    "Energy RMSE":energy_rmse.item(), 
-                    "Force Loss": force_loss.item(), 
-                    "Force RMSE":force_rmse.item(),
-                    "total_loss": total_energy_loss_val,
-                    "energy_rmse_val": total_energy_loss_val,
-                    "force_rmse_val": total_force_loss_val,
-                    "learning_rate1": current_lr1[0]
-                })
-            embed_net1.train()
-            e3trans.train()
-            model.train()
-            # 每 n个 epoch 保存一次模型
-        if batch_count % 80 == 0:
-            torch.save({
-                'embed_net1_state_dict': embed_net1.state_dict(),
-                'model_state_dict': model.state_dict(),
-                'e3conv_layer_state_dict': e3conv_layer.state_dict(),
-                'e3conv_layer2_state_dict': e3conv_layer2.state_dict(),
-                'e3trans_state_dict': e3trans.state_dict(),
-                'optimizer1_state_dict': optimizer1.state_dict(),
-                "scheduler_state_dict": scheduler1.state_dict(),
-                "a": a, 
-                "b": b, 
-                "batch_count": batch_count,}, f'combined_model_batch_count_{batch_count}.pth')
-            print(f"Model saved at batch_count {batch_count} as 'combined_model_batch_count_{batch_count}.pth'.")
-            loss_out_df = pd.DataFrame(loss_out)
-            loss_out_df.to_csv(f'epoch_{epoch}_batch_count_{batch_count}_loss.csv', index=False)
+        fx_pred_conv_batch_val = fx_pred_conv_val.to(device).view(-1)
+        fy_pred_conv_batch_val = fy_pred_conv_val.to(device).view(-1)
+        fz_pred_conv_batch_val = fz_pred_conv_val.to(device).view(-1)      
+    fx_ref_val = fx_ref_val.to(device).view(-1)
+    fy_ref_val = fy_ref_val.to(device).view(-1)
+    fz_ref_val = fz_ref_val.to(device).view(-1)
+    force_loss_val = ((
+        criterion_2(fx_pred_conv_batch_val, fx_ref_val) +
+        criterion_2(fx_pred_conv_batch_val, fy_ref_val) +
+        criterion_2(fx_pred_conv_batch_val, fz_ref_val)) / 3)
+    E_sum_val_tensor = torch.tensor(E_sum_all_val, device=device,requires_grad=True).view(-1)
+    target_E_all_val_tensor = torch.tensor(target_E_all_val, device=device,requires_grad=True).view(-1)
+    energy_loss_val = val_dataset.restore_force(criterion(E_sum_val_tensor, (target_E_all_val_tensor))**0.5)
+    total_energy_loss_val = energy_loss_val.item()
+    total_force_loss_val = force_loss_val.item()
+    total_val_loss1 = (total_energy_loss_val + total_force_loss_val)
+    print(f"""Epoch {epoch}/{epoch_numbers},
+        Total Loss _val: {total_val_loss1},
+        Energy RMSE_val: {total_energy_loss_val},
+        Force RMSE_val: {total_force_loss_val},
+        Current learning rate1: {current_lr1[0]}, """)
+    loss_out.append({
+            "epoch": epoch,
+            "batch_count":batch_count,
+            "Energy Loss": energy_loss.item(), 
+            "Energy RMSE":energy_rmse.item(), 
+            "Force Loss": force_loss.item(), 
+            "Force RMSE":force_rmse.item(),
+            "total_loss": total_energy_loss_val,
+            "energy_rmse_val": total_energy_loss_val,
+            "force_rmse_val": total_force_loss_val,
+            "learning_rate1": current_lr1[0]
+        })
+    embed_net1.train()
+    e3trans.train()
+    model.train()
+    # 每 n个 epoch 保存一次模型
+    if epoch % 1 == 0:
+        torch.save({
+            'embed_net1_state_dict': embed_net1.state_dict(),
+            'model_state_dict': model.state_dict(),
+            'e3conv_layer_state_dict': e3conv_layer.state_dict(),
+            'e3conv_layer2_state_dict': e3conv_layer2.state_dict(),
+            'e3trans_state_dict': e3trans.state_dict(),
+            'optimizer1_state_dict': optimizer1.state_dict(),
+            "scheduler_state_dict": scheduler1.state_dict(),
+            "a": a, 
+            "b": b, 
+            "batch_count": batch_count,}, f'combined_model_epoch{epoch}.pth')
+        print(f"Model saved at batch_count {batch_count} as 'combined_model_batch_count_{batch_count}.pth'.")
+        loss_out_df = pd.DataFrame(loss_out)
+        loss_out_df.to_csv(f'epoch_{epoch}_batch_count_{batch_count}_loss.csv', index=False)
                 # 早停机制
     if total_val_loss1 < best_val_loss:
         best_val_loss = total_val_loss1
@@ -1023,7 +1061,7 @@ for epoch in range(1, epoch_numbers + 1):
     epoch_energy_loss += batch_energy_loss / (batch_idx + 1)
     epoch_force_loss += batch_force_loss / (batch_idx + 1)
     loss_out_df = pd.DataFrame(loss_out)
-    loss_out_df.to_csv(f'epoch_{epoch}_batch_count_{batch_count}_loss.csv', index=False)
+    loss_out_df.to_csv(f'epoch_{epoch}_loss.csv', index=False)
     print(f"Epoch {epoch} completed in {end_time_epoch - start_time_epoch:.2f} seconds. "
         f"Total Energy Loss: {epoch_energy_loss:.4f}, Total Force Loss: {epoch_force_loss:.4f}")
 """""
