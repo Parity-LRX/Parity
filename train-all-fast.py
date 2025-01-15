@@ -100,9 +100,7 @@ lambda_reg_value = 100
 update_param = 5
 max_norm_value = 1 #梯度裁剪参数
 batch_size = 16
-#原子参考能量
-keys = torch.tensor([1, 6, 7, 8])
-values = torch.tensor([-13.61311871, -1029.86289467, -1485.30218354, -2042.61078371])
+
 
 #定义RMSE损失函数
 class RMSELoss(torch.nn.Module):
@@ -116,6 +114,10 @@ criterion_2 = RMSELoss()
 criterion = nn.SmoothL1Loss()
 torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+#原子参考能量
+keys = torch.tensor([1, 6, 7, 8]).to(device)
+values = torch.tensor([-13.61311871, -1029.86289467, -1485.30218354, -2042.61078371]).to(device)
 
 # 定义Transformer嵌入网络
 class EmbedNet(nn.Module):
