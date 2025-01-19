@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2024 Ruixiang Lin
+Copyright (c) 2024 Guangzhou Parity Materials Co., Ltd.
 
 Contact: 20162432007@m.scnu.edu.cn
 
