@@ -28,7 +28,7 @@
   - 安装命令:
     - 对于有 CUDA 支持的版本，可以使用如下命令安装：
       ```bash
-      pip install torch==2.4.1+cu12.2 torchvision==0.15.1+cu12.2 torchaudio==2.4.1+cu12.2
+      pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu121
       ```
     - 如果没有 CUDA 支持，直接安装 PyTorch：
       ```bash
@@ -36,8 +36,8 @@
       ```
 
 - **torch_scatter和torch_cluster**: 用于在图神经网络中进行操作的库，支持稀疏张量操作。
-  - 安装命令: `pip install torch-scatter`
-  - 安装命令: `pip install torch-cluster`
+  - 安装命令: `pip install torch-scatter -f https://data.pyg.org/whl/torch-2.4.1+cu121.html`
+  - 安装命令: `pip install torch-cluster -f https://data.pyg.org/whl/torch-2.4.1+cu121.html`
 - **e3nn**: 用于处理图形卷积神经网络中的对称性操作，专门用于处理对称张量、群表示和等变神经网络。
   - 安装命令: `pip install e3nn`
 
