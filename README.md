@@ -24,7 +24,7 @@
 - **pandas**: 用于数据处理和分析，尤其是操作数据框（DataFrame）。
   - 安装命令: `pip install pandas`
 
-- **pytorch ≥2.4.1 with CUDA ≥12.2**: 用于深度学习训练和模型构建，CUDA 用于加速计算。
+- **pytorch ≥2.4.1 with CUDA ≥12.1**: 用于深度学习训练和模型构建，CUDA 用于加速计算。
   - 安装命令:
     - 对于有 CUDA 支持的版本，可以使用如下命令安装：
       ```bash
